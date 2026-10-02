@@ -1,0 +1,704 @@
+================================================================================
+                    AUDITORIA COMPLETA - AGENTE LEADS
+                    Agente Autonomo de Prospeccion Inteligente
+================================================================================
+Fecha: 2026-04-17
+Auditor: Hermes V5.0
+Ubicacion: D:\PROYECTOS\AGENTES CON IA\AGENTE LEADS
+Calificacion General: 6.5/10
+Estado: FUNCIONAL PERO INCOMPLETO PARA PRODUCCION
+
+================================================================================
+                            INDICE
+================================================================================
+1. Resumen Ejecutivo
+2. Arquitectura Tecnica
+3. Analisis de Componentes
+4. Tools Disponibles
+5. Problemas Criticos
+6. Base de Datos
+7. Variables de Entorno
+8. Dependencias
+9. Recomendaciones
+10. Estado por Modulo
+
+================================================================================
+                        1. RESUMEN EJECUTIVO
+================================================================================
+
+El AGENTE LEADS es un sistema de prospeccion automatizada basado en:
+- Modelo: Kimi K2.5 via NVIDIA NIM API
+- Stack: TypeScript + Node.js + SQLite
+- Bot: Telegram (grammy framework)
+- Scraping: Apify + Playwright (stealth)
+
+La arquitectura es solida y bien estructurada, pero existen dependencias 
+criticas no configuradas que impiden el funcionamiento completo en produccion.
+
+PUNTOS FUERTES:
++ Buena separacion de responsabilidades (/agent, /bot, /config, /database)
++ Sistema de memoria persistente con SQLite
++ Retry logic con exponential backoff
++ Bridge Python para scraping stealth
++ Whitelist de seguridad por Telegram ID
+
+PUNTOS DEBILES:
+- APIFY_TOKEN no configurado (bloquea scraping principal)
+- Verificacion de email basica (servicio gratuito)
+- Transcripcion de voz sin implementar (placeholder)
+- Base de datos vacia (ningun lead guardado todavia)
+
+================================================================================
+                        2. ARQUITECTURA TECNICA
+================================================================================
+
+ESTRUCTURA DE DIRECTORIOS:
+
+AGENTE LEADS/
+|-- src/
+|   |-- agent/
+|   |   |-- loop.ts              # Loop principal del agente (175 lineas)
+|   |   |-- registry.ts          # Registro de tools (44 lineas)
+|   |   |-- types.ts             # Definiciones de tipos
+|   |   |-- tools/
+|   |   |   |-- get_current_time.ts          # Tool basica
+|   |   |   |-- scrape_instagram_leads.ts    # Scraping Apify (PROBLEMA)
+|   |   |   |-- scrape_stealth.ts            # Scraping Playwright
+|   |   |   |-- verify_email.ts              # Verificacion basica
+|   |   |   |-- save_lead.ts                 # Guardar en SQLite
+|   |   |   |-- enrich_lead_profile.ts       # Enriquecimiento limitado
+|   |   |-- utils/
+|   |       |-- python_bridge.ts  # Bridge a Python/Playwright
+|-- bot/
+|   |-- telegram.ts              # Bot de Telegram (184 lineas)
+|-- config/
+|   |-- nvidia.ts                # Configuracion NVIDIA NIM
+|-- database/
+|   |-- sqlite.ts                # Base de datos SQLite
+|-- data/
+|   |-- agente-leads.db          # Archivo SQLite (4KB - VACIO)
+|-- .env                         # Variables de entorno
+|-- package.json                 # Dependencias Node.js
+
+STACK TECNOLOGICO:
+- Runtime: Node.js (ES Modules)
+- Lenguaje: TypeScript 5.6.0
+- Framework Bot: grammy ^1.31.0
+- Cliente LLM: openai ^4.65.0 (para NVIDIA NIM)
+- Database: better-sqlite3 ^11.5.0
+- HTTP: node-fetch ^3.3.2
+- Python: Playwright (en .venv)
+
+================================================================================
+                        3. ANALISIS DE COMPONENTES
+================================================================================
+
+3.1 AGENT LOOP (src/agent/loop.ts)
+-----------------------------------
+Lineas: 175
+Estado: FUNCIONAL
+
+Caracteristicas:
+- Maximo 10 iteraciones de razonamiento
+- Ejecuta tool calls en PARALELO (Promise.all)
+- Persistencia automatica de conversaciones
+- Retry con exponential backoff via withRetry()
+- Contexto: ultimos 20 mensajes en memoria
+
+Flujo de trabajo:
+1. Recibe mensaje del usuario
+2. Consulta historial (20 mensajes previos)
+3. Construye system prompt con memoria
+4. LLM decide si usar tools o responder
+5. Ejecuta tools en paralelo si es necesario
+6. Alimenta resultados de vuelta al contexto
+7. Itera hasta tener respuesta final
+
+Prompt System:
+- Instruye auto-reintentos si scraping falla
+- Solicita Reporte de Ejecucion estructurado
+- Exige comportamiento proactivo
+- Dependencia de idioma del usuario
+
+3.2 REGISTRY DE TOOLS (src/agent/registry.ts)
+---------------------------------------------
+Lineas: 44
+Estado: FUNCIONAL
+
+Tools registradas (6 total):
+1. get_current_time       - Tool trivial para testing
+2. scrape_instagram_leads - DEPENDE DE APIFY (problema)
+3. scrape_stealth         - Scraping Playwright (OK)
+4. verify_email           - Verificacion basica (limitado)
+5. save_lead              - Persistencia SQLite (OK)
+6. enrich_lead_profile    - Enriquecimento via Google
+
+3.3 TELEGRAM BOT (src/bot/telegram.ts)
+--------------------------------------
+Lineas: 184
+Estado: FUNCIONAL
+
+Caracteristicas:
+- Long polling (no requiere webhook)
+- Whitelist por ALLOWED_IDS
+- Comandos: /start, /clear, /memory
+- Soporte mensajes de texto
+- Soporte notas de voz (PLACEHOLDER - no implementado)
+- Tipo de respuesta: Markdown
+
+Flujo mensaje de texto:
+1. Verifica whitelist
+2. Muestra "typing..."
+3. Ejecuta runAgentLoop()
+4. Responde con resultado
+5. Loguea interaccion
+
+Flujo nota de voz:
+1. Descarga archivo OGG
+2. Guarda en ./data/tmp/
+3. PLACEHOLDER: "Transcripcion no implementada"
+4. Envia al agente la transcripcion placeholder
+5. Limpia archivo temporal
+
+================================================================================
+                        4. TOOLS DISPONIBLES
+================================================================================
+
+4.1 get_current_time
+--------------------
+Lineas: ~20
+Uso: Testing basico
+Estado: FUNCIONAL
+Descripcion: Retorna fecha/hora actual
+
+4.2 scrape_instagram_leads [CRITICO]
+------------------------------------
+Archivo: src/agent/tools/scrape_instagram_leads.ts
+Lineas: 48
+Estado: NO FUNCIONAL (falta APIFY_TOKEN)
+
+Problema:
+- Query fija: site:instagram.com + query + @gmail.com
+- Solo busca emails @gmail.com (ignora outlook, yahoo, empresariales)
+- Requiere APIFY_TOKEN en environment
+- Sin token, retorna error inmediato
+
+Implementacion actual:
+```typescript
+const apiToken = process.env.APIFY_TOKEN;
+if (!apiToken) {
+  return "Error: APIFY_TOKEN is not set...";
+}
+const url = `https://api.apify.com/v2/acts/apify~google-search-scraper/...`;
+// Hace POST a Apify con query limitada
+```
+
+Limitaciones:
+- Solo 10 resultados por query
+- 1 pagina por query (maxPagesPerQuery: 1)
+- No parsea engagement, followers, ubicacion
+- Depende de que Instagram indexe emails en Google
+
+Impacto: Esta es la tool PRINCIPAL del agente y no funciona.
+
+4.3 scrape_stealth
+------------------
+Archivo: src/agent/tools/scrape_stealth.ts
+Lineas: 32
+Estado: FUNCIONAL
+
+Caracteristicas:
+- Usa Playwright via Python bridge
+- Evade Cloudflare/Akamai
+- Extrae emails y links automaticamente
+- Parametro opcional: selector CSS
+
+Flujo:
+1. Recibe URL objetivo
+2. Llama runStealthScraper() en Python
+3. Python ejecuta src/agent/scripts/stealth_scraper.py
+4. Retorna JSON con datos extraidos
+
+Dependencias:
+- Python 3.x
+- Playwright instalado en .venv
+- Script stealth_scraper.py debe existir
+
+4.4 verify_email [LIMITADO]
+---------------------------
+Archivo: src/agent/tools/verify_email.ts
+Lineas: 34
+Estado: FUNCIONAL PERO FRAGIL
+
+Implementacion:
+- Usa servicio gratuito: rapid-email-verifier.fly.dev
+- Solo verifica sintaxis y dominio
+- No verifica existencia real del inbox
+- Rate limits desconocidos
+
+Limitaciones:
+- Servicio externo no controlado
+- Puede caerse o tener rate limits
+- No tiene retry logic propio
+
+Solucion recomendada:
+- Integrar Hunter.io (50 verificaciones/mes gratis)
+- O ZeroBounce (mas confiable, pago)
+
+4.5 save_lead
+-------------
+Archivo: src/agent/tools/save_lead.ts
+Lineas: 57
+Estado: FUNCIONAL
+
+Caracteristicas:
+- Guarda leads en tabla SQLite
+- Deduplicacion por email
+- Campos: email, source, niche, platform, tags
+- Retorna status: nuevo o actualizado
+
+Esquema tabla leads:
+- id: INTEGER PRIMARY KEY
+- email: TEXT UNIQUE
+- source: TEXT (URL origen)
+- niche: TEXT (categoria/mercado)
+- platform: TEXT (instagram, web, etc)
+- tags: TEXT (JSON array)
+- status: TEXT (new, contacted, qualified, etc)
+- created_at: TIMESTAMP
+- updated_at: TIMESTAMP
+
+Estado actual: Tabla existe pero esta VACIA.
+
+4.6 enrich_lead_profile [BASICO]
+--------------------------------
+Archivo: src/agent/tools/enrich_lead_profile.ts
+Lineas: 55
+Estado: FUNCIONAL
+
+Implementacion:
+- Recibe email y niche
+- Hace Google search por: "{nombre}" + niche
+- Retorna resultados de busqueda
+- No usa APIs de enriquecimiento profesional
+
+Limitaciones:
+- Solo hace busqueda Google basica
+- No extrae LinkedIn
+- No obtiene company info
+- No encuentra telefonos
+
+Servicios recomendados para mejorar:
+- Clearbit (enriquecimiento de leads)
+- Apollo.io (B2B data)
+- Hunter.io (email finder + verificacion)
+
+================================================================================
+                        5. PROBLEMAS CRITICOS
+================================================================================
+
+PROBLEMA #1: APIFY_TOKEN NO CONFIGURADO [BLOQUEANTE]
+----------------------------------------------------
+Archivo afectado: scrape_instagram_leads.ts
+Severidad: CRITICA
+Impacto: La tool principal de scraping NO FUNCIONA
+
+Codigo problematico:
+```typescript
+const apiToken = process.env.APIFY_TOKEN;
+if (!apiToken) {
+  return "Error: APIFY_TOKEN is not set in environment variables.";
+}
+```
+
+Estado en .env:
+- Variable NO presente en archivo .env
+- Valor actual: undefined
+
+Solucion:
+1. Registrar en apify.com
+2. Obtener API token
+3. Agregar a .env: APIFY_TOKEN=tu_token_aqui
+4. Reiniciar agente
+
+Alternativas:
+- Bright Data (mas confiable, pago)
+- ScrapingBee (API simple)
+- Playwright puro (gratis pero mas lento)
+
+PROBLEMA #2: QUERY DE BUSQUEDA MUY LIMITADA
+--------------------------------------------
+Archivo afectado: scrape_instagram_leads.ts
+Severidad: MEDIA
+
+Query actual:
+```typescript
+queries: `site:instagram.com + ${query} + @gmail.com`
+```
+
+Problemas:
+- Solo busca @gmail.com
+- Ignora: @outlook.com, @yahoo.com, @hotmail.com
+- Ignora emails corporativos (@empresa.com)
+- "site:instagram.com" en Google rara vez muestra emails publicos
+- Instagram bloquea scraping agresivo
+
+Solucion:
+```typescript
+queries: [
+  `site:instagram.com ${query} "@gmail.com"`,
+  `site:instagram.com ${query} "@outlook.com"`,
+  `site:instagram.com ${query} "email" "bio"`,
+  `site:instagram.com ${query} "contact"`,
+  `site:instagram.com ${query} inurl:"/business/"`
+]
+```
+
+PROBLEMA #3: VERIFICACION DE EMAIL FRAGIL
+------------------------------------------
+Archivo afectado: verify_email.ts
+Severidad: MEDIA
+
+Servicio usado: rapid-email-verifier.fly.dev
+
+Riesgos:
+- Servicio gratuito puede desaparecer
+- Rate limits desconocidos
+- Sin retry logic
+- Solo validacion sintactica
+
+Solucion recomendada:
+- Hunter.io: 50 verificaciones/mes gratis
+- ZeroBounce: Mas confiable
+- Implementar verificacion SMTP (lento pero gratis)
+
+PROBLEMA #4: TRANSCRIPCION DE VOZ NO IMPLEMENTADA
+------------------------------------------------
+Archivo afectado: telegram.ts (lineas 125-178)
+Severidad: BAJA
+
+Estado actual:
+```typescript
+// TODO: Call Whisper API here
+const transcription = "[Transcripcion de audio no implementada aun]";
+```
+
+El codigo descarga el audio pero no lo transcribe.
+
+Solucion:
+- Integrar Groq Whisper ($5 de credito gratis)
+- O OpenAI Whisper API
+- Requiere ffmpeg para convertir OGG a MP3
+
+Costo estimado:
+- Whisper: $0.006/minuto
+- Groq Whisper: Gratis hasta cierto limite
+
+PROBLEMA #5: BASE DE DATOS VACIA
+---------------------------------
+Tabla afectada: leads
+Severidad: MEDIA
+
+Estado:
+- Tabla existe con schema correcto
+- Size: 4KB (solo schema, sin datos)
+- Ningun lead ha sido guardado todavia
+
+Posibles causas:
+1. El agente no esta recibiendo instrucciones para guardar leads
+2. El flujo de scrape -> verify -> save no se completa
+3. APIFY_TOKEN ausente previene todo el flujo
+
+================================================================================
+                        6. BASE DE DATOS
+================================================================================
+
+Sistema: SQLite 3
+Archivo: data/agente-leads.db
+Size: 4KB
+Estado: FUNCIONAL PERO VACIA
+
+Configuracion:
+- Journal mode: WAL (Write-Ahead Logging)
+- Foreign keys: ON
+- Concurrent reads: OK
+
+TABLAS EXISTENTES:
+
+6.1 conversations
+-----------------
+Proposito: Historial de chats
+Schema:
+  - id: INTEGER PRIMARY KEY AUTOINCREMENT
+  - user_id: TEXT NOT NULL
+  - role: TEXT CHECK('user', 'assistant', 'tool', 'system')
+  - content: TEXT NOT NULL
+  - tool_name: TEXT
+  - tool_call_id: TEXT
+  - created_at: TEXT DEFAULT datetime('now')
+
+Indices:
+  - idx_conv_user: (user_id, created_at DESC)
+
+Uso: OK - almacena historial
+
+6.2 memory_fragments
+--------------------
+Proposito: Memoria persistente por usuario
+Schema:
+  - id: INTEGER PRIMARY KEY AUTOINCREMENT
+  - user_id: TEXT NOT NULL
+  - key: TEXT NOT NULL
+  - value: TEXT NOT NULL
+  - updated_at: TEXT DEFAULT datetime('now')
+  - UNIQUE(user_id, key)
+
+Uso: OK - almacena preferencias/usuario
+
+6.3 users
+---------
+Proposito: Tracking de usuarios Telegram
+Schema:
+  - user_id: TEXT PRIMARY KEY
+  - username: TEXT
+  - first_name: TEXT
+  - last_name: TEXT
+  - created_at: TEXT
+  - updated_at: TEXT
+
+Uso: OK - actualizado por middleware
+
+6.4 leads [VACIA]
+-----------------
+Proposito: Almacenar leads prospectados
+Schema:
+  - id: INTEGER PRIMARY KEY AUTOINCREMENT
+  - email: TEXT UNIQUE NOT NULL
+  - source: TEXT (URL de origen)
+  - niche: TEXT (categoria/mercado)
+  - platform: TEXT (instagram, web, etc)
+  - tags: TEXT (JSON array)
+  - status: TEXT (new, contacted, qualified, etc)
+  - created_at: TEXT
+  - updated_at: TEXT
+
+Registros: 0
+Problema: Ningun lead guardado todavia
+
+Indices:
+  - idx_leads_email: email
+  - idx_leads_status: status
+
+================================================================================
+                        7. VARIABLES DE ENTORNO
+================================================================================
+
+Archivo: .env
+Estado: CONFIGURADO PARCIALMENTE
+
+Variables requeridas:
+
+7.1 NVIDIA_API_KEY [OK]
+-----------------------
+Estado: Configurado
+Uso: Conectar con NVIDIA NIM para Kimi K2.5
+
+7.2 TELEGRAM_BOT_TOKEN [OK]
+---------------------------
+Estado: Configurado
+Uso: Conectar bot de Telegram
+
+7.3 ALLOWED_IDS [OK]
+--------------------
+Estado: Configurado (con whitelist)
+Uso: Restriccion de acceso por Telegram ID
+
+7.4 DB_PATH [OK - default]
+--------------------------
+Estado: Usa default (./data/agente-leads.db)
+Uso: Ubicacion base de datos SQLite
+
+7.5 AGENT_NAME [OK - default]
+------------------------------
+Estado: Usa default ("AGENTE LEADS")
+Uso: Nombre mostrado en logs
+
+7.6 MAX_TOOL_ITERATIONS [OK - default]
+---------------------------------------
+Estado: Usa default (10)
+Uso: Limite de iteraciones del agent loop
+
+7.7 LOG_LEVEL [OK - default]
+----------------------------
+Estado: Usa default
+Uso: Nivel de logging
+
+7.8 APIFY_TOKEN [FALTANTE - CRITICO]
+-------------------------------------
+Estado: NO CONFIGURADO
+Uso: Scraping de Instagram via Google Search
+Impacto: Tool scrape_instagram_leads FALLA
+
+Accion requerida:
+Agregar a .env:
+APIFY_TOKEN=tu_token_de_apify_aqui
+
+Como obtener:
+1. Ir a https://www.apify.com
+2. Crear cuenta
+3. Ir a Settings -> Integrations -> API Tokens
+4. Copiar token y agregar a .env
+
+================================================================================
+                        8. DEPENDENCIAS
+================================================================================
+
+8.1 Dependencias de Produccion (Node.js)
+----------------------------------------
+- grammy: ^1.31.0           Framework bot Telegram
+- openai: ^4.65.0           Cliente API (para NVIDIA NIM)
+- better-sqlite3: ^11.5.0   Database SQLite
+- dotenv: ^16.4.5           Carga variables de entorno
+- node-fetch: ^3.3.2         HTTP requests
+- form-data: ^4.0.0         Multipart forms
+
+8.2 Dependencias de Desarrollo
+------------------------------
+- @types/better-sqlite3: ^7.6.11
+- @types/node: ^22.0.0
+- tsx: ^4.19.0              TypeScript executor
+- typescript: ^5.6.0
+
+8.3 Dependencias Python
+-----------------------
+- Playwright: Instalado en .venv
+  Usado por: python_bridge.ts
+  Proposito: Scraping stealth con navegador real
+
+Estado: OK - Todas las dependencias instaladas
+
+================================================================================
+                        9. RECOMENDACIONES
+================================================================================
+
+9.1 INMEDIATAS (Antes de usar el agente)
+---------------------------------------
+
+[ ] 1. Configurar APIFY_TOKEN
+    Archivo: .env
+    Valor: Token de apify.com
+    Impacto: Sin esto, no funciona scraping de Instagram
+
+[ ] 2. Expandir queries de busqueda
+    Archivo: src/agent/tools/scrape_instagram_leads.ts
+    Agregar multiples queries para diferentes dominios de email
+    
+[ ] 3. Verificar credenciales NVIDIA
+    Comando: node test-nvidia.mjs
+    Confirmar que Kimi K2.5 responde correctamente
+
+9.2 A CORTO PLAZO (Mejoras de calidad)
+--------------------------------------
+
+[ ] 4. Mejorar verificacion de emails
+    Integrar Hunter.io o ZeroBounce
+    Actualizar verify_email.ts
+
+[ ] 5. Implementar transcripcion de voz
+    Integrar Groq Whisper
+    Completar handler en telegram.ts
+
+[ ] 6. Agregar retry a tools
+    Agregar withRetry a verify_email
+    Mejorar manejo de errores de red
+
+[ ] 7. Crear script de prueba de integracion
+    Test end-to-end de todo el flujo
+
+9.3 A MEDIANO PLAZO (Produccion robusta)
+----------------------------------------
+
+[ ] 8. Migrar de Apify a Bright Data
+    Mas confiable y escalable
+    Costo: ~$500/mes para volumen alto
+
+[ ] 9. Agregar dashboard web
+    Ver leads guardados
+    Estadisticas de busquedas
+    Exportar CSV
+
+[ ] 10. Implementar cola de tareas
+    Para scraping de alto volumen
+    Evitar rate limits
+
+[ ] 11. Agregar tests unitarios
+    Cobertura minima 70%
+
+[ ] 12. Dockerizar aplicacion
+    Facilitar deployment
+    Incluir .venv y Playwright
+
+================================================================================
+                        10. ESTADO POR MODULO
+================================================================================
+
++-------------------------+-----------+----------+--------------------------------+
+| Modulo                  | Lineas    | Estado   | Notas                          |
++-------------------------+-----------+----------+--------------------------------+
+| index.ts                | 37        | OK       | Entry point limpio             |
+| loop.ts                 | 175       | OK       | Core bien implementado         |
+| registry.ts             | 44        | OK       | Registro simple y funcional    |
+| types.ts                | ~20       | OK       | Definiciones correctas         |
+| telegram.ts             | 184       | OK       | Bot completo, sin voice      |
+| nvidia.ts               | ~50       | OK       | Config Kimi via NIM            |
+| sqlite.ts               | ~150      | OK       | Schema y queries OK            |
+| get_current_time.ts     | 20        | OK       | Tool trivial                   |
+| scrape_instagram_leads  | 48        | ERROR    | Falta APIFY_TOKEN              |
+| scrape_stealth.ts       | 32        | OK       | Bridge Python OK               |
+| verify_email.ts         | 34        | OK       | Servicio externo fragil        |
+| save_lead.ts            | 57        | OK       | Guardado SQLite OK             |
+| enrich_lead_profile.ts  | 55        | OK       | Basico pero funcional          |
+| python_bridge.ts        | 54        | OK       | Ejecucion Playwright correcta  |
++-------------------------+-----------+----------+--------------------------------+
+
+================================================================================
+                        CONCLUSIONES
+================================================================================
+
+El AGENTE LEADS tiene una arquitectura solida y bien pensada. El codigo esta
+limpío, modular y sigue buenas practicas. Los problemas actuales no son de
+diseno, sino de configuracion y dependencias externas.
+
+ESTADO ACTUAL:
+- Codigo: 8/10 (Bien estructurado)
+- Funcionalidad: 4/10 (Falta APIFY_TOKEN)
+- Documentacion: 7/10 (Codigo autodocumentado)
+- Configuracion: 5/10 (Variables incompletas)
+
+PARA PONER EN PRODUCCION:
+
+1. Minimo (1 hora):
+   - Agregar APIFY_TOKEN a .env
+   - Expandir queries en scrape_instagram_leads.ts
+   - Hacer test run
+
+2. Recomendado (1 dia):
+   - Agregar Hunter.io para emails
+   - Implementar transcripcion de voz
+   - Agregar tests basicos
+
+3. Profesional (1 semana):
+   - Migrar a Bright Data
+   - Dashboard web
+   - Docker + CI/CD
+
+El agente TIENE POTENCIAL pero necesita trabajo antes de ser util
+para prospeccion real.
+
+================================================================================
+                        END OF REPORT
+================================================================================
+
+Generado por: Hermes Agent System
+Fecha: 2026-04-17
+Formulario: TXT completo

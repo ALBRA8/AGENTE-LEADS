@@ -1,0 +1,27 @@
+node_modules/
+dist/
+data/
+.env
+.env.*
+!.env.example
+*.db
+*.db-shm
+*.db-wal
+
+# Python
+.venv/
+venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Playwright
+test-results/
+playwright-report/
+
+# OS / Editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
