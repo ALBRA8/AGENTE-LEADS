@@ -5,7 +5,11 @@ export const scrapeInstagramLeads: Tool = {
     type: "function",
     function: {
       name: "scrape_instagram_leads",
-      description: "Busca perfiles de Instagram con emails públicos basados en una palabra clave.",
+      description:
+        "LEGACY: Hace una búsqueda en Google (via Apify google-search-scraper) buscando " +
+        "páginas que mencionen el query + @gmail.com. NO es scraping de Instagram directamente. " +
+        "Limitado a direcciones @gmail.com. Devuelve resultados crudos de Google sin normalizar. " +
+        "Para prospección estructurada con calificación y evidencia, usar 'run_lead_pipeline'.",
       parameters: {
         type: "object",
         properties: {

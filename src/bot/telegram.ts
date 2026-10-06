@@ -9,14 +9,22 @@ import fs from "fs";
 import { runAgentLoop } from "../agent/loop.js";
 import { upsertUser } from "../database/sqlite.js";
 import dotenv from "dotenv";
+import {
+  splitMessage,
+  buildHelpText,
+  buildStatsText,
+} from "./telegram_helpers.js";
+import { checkHealth, formatHealth } from "../agent/health.js";
 
 dotenv.config({ override: true }); // override: el .env del proyecto gana sobre variables del sistema
 
 // ── Env validation ─────────────────────────────────────────
 const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
-if (!BOT_TOKEN || BOT_TOKEN.includes("AAAAAAAA")) {
+// FIX (QUAL-C4): catch both placeholder patterns — "AAAAAAAA" and "your_xxx_here"
+if (!BOT_TOKEN || BOT_TOKEN.includes("AAAAAAAA") || BOT_TOKEN.includes("your") || BOT_TOKEN.includes("placeholder")) {
   throw new Error(
-    "[Telegram] TELEGRAM_BOT_TOKEN is missing or still a placeholder."
+    "[Telegram] TELEGRAM_BOT_TOKEN is missing or still a placeholder. " +
+      "Create a bot via @BotFather and set TELEGRAM_BOT_TOKEN in .env."
   );
 }
 
@@ -64,8 +72,10 @@ bot.use(async (ctx: Context, next) => {
 bot.command("start", async (ctx) => {
   await ctx.reply(
     `👋 *Hola, soy AGENTE LEADS.*\n\n` +
-      `Tu agente de IA de élite para gestión de clientes y negocios, impulsado por *Kimi K2.5* vía NVIDIA NIM.\n\n` +
-      `Puedes escribirme cualquier cosa o enviarme una nota de voz. ¡Estoy listo!`,
+      `Sistema de prospección inteligente B2B, impulsado por *GLM 5.3 Flash* vía NVIDIA NIM.\n\n` +
+      `Puedo descubrir, investigar, validar y puntuar leads automáticamente. ` +
+      `Escríbeme en lenguaje natural qué necesitas.\n\n` +
+      `Usa /help para ver los comandos disponibles.`,
     { parse_mode: "Markdown" }
   );
 });
@@ -95,6 +105,30 @@ bot.command("memory", async (ctx) => {
   });
 });
 
+// ── /help command – P3: show available commands + examples ──
+bot.command("help", async (ctx) => {
+  const help = buildHelpText();
+  const chunks = splitMessage(help);
+  for (const chunk of chunks) {
+    await ctx.reply(chunk, { parse_mode: "Markdown" });
+  }
+});
+
+// ── /stats command – P3: lead intelligence DB stats ─────────
+bot.command("stats", async (ctx) => {
+  const stats = buildStatsText();
+  const chunks = splitMessage(stats);
+  for (const chunk of chunks) {
+    await ctx.reply(chunk, { parse_mode: "Markdown" });
+  }
+});
+
+// ── /health command – P3: system health check ───────────────
+bot.command("health", async (ctx) => {
+  const h = checkHealth();
+  await ctx.reply(formatHealth(h), { parse_mode: "Markdown" });
+});
+
 // ── Text message handler ───────────────────────────────────
 bot.on("message:text", async (ctx) => {
   const userId = ctx.from!.id.toString();
@@ -109,9 +143,13 @@ bot.on("message:text", async (ctx) => {
       userMessage: text,
     });
 
-    await ctx.reply(result.response, { parse_mode: "Markdown" });
+    // P3: split long responses to respect Telegram's 4096 char limit
+    const chunks = splitMessage(result.response);
+    for (const chunk of chunks) {
+      await ctx.reply(chunk, { parse_mode: "Markdown" });
+    }
     console.log(
-      `[Bot] ✉️  User ${userId} → ${result.iterations} iterations → replied`
+      `[Bot] ✉️  User ${userId} → ${result.iterations} iterations → replied (${chunks.length} message${chunks.length > 1 ? "s" : ""})`
     );
   } catch (err) {
     console.error("[Bot] Agent error:", err);

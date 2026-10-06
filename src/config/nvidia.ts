@@ -1,24 +1,25 @@
 // ============================================================
 // src/config/nvidia.ts
-// Configuración del cliente NVIDIA NIM para AGENTE LEADS (Kimi K2.5)
+// Configuración del cliente NVIDIA NIM para AGENTE LEADS (GLM 5.3 Flash)
 // ============================================================
 
 import OpenAI from "openai";
 import dotenv from "dotenv";
 
-dotenv.config({ override: true }); // override: la key del .env siempre gana sobre variables del sistema
+dotenv.config({ override: true });
 
 // ── Constants ─────────────────────────────────────────────
 export const NVIDIA_CONFIG = {
   baseURL: "https://integrate.api.nvidia.com/v1",
-  // ── Modelo activo ──────────────────────────────────────────
-  // meta/llama-3.3-70b-instruct → libre, sin aprobación de NVIDIA
-  // moonshotai/kimi-k2.5         → requiere solicitar acceso en build.nvidia.com
-  model: "moonshotai/kimi-k2.5",
+  // ── Modelo activo (P1: actualizado a GLM 5.3 Flash) ───────
+  // GLM 5.3 Flash es un modelo de razonamiento: genera
+  // `reasoning_content` antes de `content`. Requiere max_tokens >= 1000
+  // para que tenga espacio tanto para razonar como para responder.
+  model: "z-ai/glm-5.3-flash",
   contextWindow: 128_000,
-  maxTokens: 8_192,
-  temperature: 0.6,
-  topP: 0.7,
+  maxTokens: 4_096,    // bumped from 8_192 to allow reasoning + answer
+  temperature: 0.5,
+  topP: 1,
 
   // Retry policy – exponential back-off
   retry: {
@@ -30,7 +31,8 @@ export const NVIDIA_CONFIG = {
 
 // ── Validate required env vars ─────────────────────────────
 const apiKey = process.env.NVIDIA_API_KEY;
-if (!apiKey || apiKey.startsWith("nvapi-xxx")) {
+// FIX (QUAL-C3): catch both placeholder patterns — "nvapi-xxx" and "your_xxx_here"
+if (!apiKey || apiKey.startsWith("nvapi-xxx") || apiKey.includes("your")) {
   throw new Error(
     "[NVIDIA] NVIDIA_API_KEY está ausente o aún es el placeholder. " +
       "Please fill in your key in the .env file."
@@ -43,11 +45,10 @@ export const nvidiaNIMClient = new OpenAI({
   baseURL: NVIDIA_CONFIG.baseURL,
   apiKey,
   defaultHeaders: {
-    // Ensures NVIDIA gateway accepts the request without blocking
     "User-Agent": "AGENTE-LEADS/1.0 (Node.js; NVIDIA-NIM-Compatible)",
     Accept: "application/json",
   },
-  timeout: 90_000,   // 90 s – NIM can be slow on first call
+  timeout: 120_000,   // 120s — GLM 5.3 Flash reasoning can take 30-60s
   maxRetries: 0,     // We handle retries ourselves (exponential back-off)
 });
 

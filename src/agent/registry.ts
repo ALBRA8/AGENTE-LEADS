@@ -10,11 +10,16 @@ import { verifyEmail } from "./tools/verify_email.js";
 import { saveLead } from "./tools/save_lead.js";
 import { enrichLeadProfile } from "./tools/enrich_lead_profile.js";
 import { scrapeStealth } from "./tools/scrape_stealth.js";
+import { runLeadPipelineTool } from "./tools/run_lead_pipeline.js";
+import { runOutreachTool } from "./tools/run_outreach.js";
 
 // ── Register all available tools ───────────────────────────
-// To add a new tool: import it and add it to this array.
 const TOOL_REGISTRY: Tool[] = [
   getCurrentTime,
+  // ── V2 orchestrator tools (P0.9 + P2.4) ────────────────────────
+  runLeadPipelineTool,
+  runOutreachTool,
+  // ── Legacy tools (kept for backward compatibility) ────────────────
   scrapeInstagramLeads,
   verifyEmail,
   saveLead,
