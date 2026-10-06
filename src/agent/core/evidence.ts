@@ -20,7 +20,29 @@ export type ObservationStatus =
   | "FOUND"
   | "NOT_FOUND"
   | "CONFIRMED_ABSENT"
-  | "INFERRED";
+  | "INFERRED"
+  // Production closure (§9): an explicit contradiction between sources.
+  | "CONTRADICTED";
+
+/**
+ * §9 Truth levels — how close a piece of evidence is to ground truth.
+ * Mapping from ObservationStatus (+ confidence for VERIFIED):
+ *   FOUND + (high|medium)            → VERIFIED
+ *   FOUND + (low|none)               → UNVERIFIED
+ *   NOT_FOUND                        → UNKNOWN
+ *   CONFIRMED_ABSENT                 → VERIFIED (absence is verified)
+ *   INFERRED                         → INFERRED
+ *   CONTRADICTED                     → CONTRADICTED
+ *   ESTIMATED is reserved for quantified guesses (ranges, counts)
+ *   produced by deterministic estimation logic (never by the LLM).
+ */
+export type TruthLevel =
+  | "VERIFIED"
+  | "INFERRED"
+  | "ESTIMATED"
+  | "UNVERIFIED"
+  | "CONTRADICTED"
+  | "UNKNOWN";
 
 export type ConfidenceLevel =
   | "high"     // multiple sources agree
@@ -45,6 +67,8 @@ export interface EvidenceRecord<T = string> {
   evidence: string;
   /** For INFERRED values: reasoning chain */
   inferred_from?: string[];
+  /** §9 truth level — optional for backwards compatibility; new records always set it */
+  truth_level?: TruthLevel;
 }
 
 /**
@@ -65,6 +89,7 @@ export function found<T>(
     retrieved_at: new Date().toISOString(),
     confidence,
     evidence,
+    truth_level: truthLevelOf("FOUND", confidence),
   };
 }
 
@@ -88,6 +113,7 @@ export function notFound(
     retrieved_at: new Date().toISOString(),
     confidence: "low",
     evidence,
+    truth_level: "UNKNOWN",
   };
 }
 
@@ -104,6 +130,7 @@ export function confirmedAbsent(
     retrieved_at: new Date().toISOString(),
     confidence: "high",
     evidence,
+    truth_level: "VERIFIED",
   };
 }
 
@@ -122,7 +149,52 @@ export function inferred<T>(
     confidence: "none",
     evidence: reason,
     inferred_from,
+    truth_level: "INFERRED",
   };
+}
+
+/**
+ * §9: evidence for a value where two sources disagree.
+ * A CONTRADICTED record must NEVER be presented as a fact.
+ */
+export function contradicted<T>(
+  field: string,
+  values: [T | null, T | null],
+  sources: [string, string],
+  evidence: string
+): EvidenceRecord<T> {
+  return {
+    field,
+    value: (values[0] ?? values[1] ?? null) as T | null,
+    status: "CONTRADICTED",
+    source: sources.join(" vs "),
+    retrieved_at: new Date().toISOString(),
+    confidence: "low",
+    evidence,
+    truth_level: "CONTRADICTED",
+  };
+}
+
+/**
+ * §9: derive the truth level of an evidence record from its status + confidence.
+ * Deterministic mapping — see TruthLevel doc.
+ */
+export function truthLevelOf(
+  status: ObservationStatus,
+  confidence: ConfidenceLevel = "low"
+): TruthLevel {
+  switch (status) {
+    case "FOUND":
+      return confidence === "high" || confidence === "medium" ? "VERIFIED" : "UNVERIFIED";
+    case "CONFIRMED_ABSENT":
+      return "VERIFIED";
+    case "INFERRED":
+      return "INFERRED";
+    case "NOT_FOUND":
+      return "UNKNOWN";
+    case "CONTRADICTED":
+      return "CONTRADICTED";
+  }
 }
 
 /**
@@ -138,6 +210,7 @@ export function statusLabel(s: ObservationStatus): string {
     case "NOT_FOUND": return "no encontrado";
     case "CONFIRMED_ABSENT": return "ausente confirmado";
     case "INFERRED": return "inferido";
+    case "CONTRADICTED": return "contradicho";
   }
 }
 

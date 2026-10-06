@@ -29,28 +29,58 @@ export const NVIDIA_CONFIG = {
   },
 } as const;
 
-// ── Validate required env vars ─────────────────────────────
-const apiKey = process.env.NVIDIA_API_KEY;
-// FIX (QUAL-C3): catch both placeholder patterns — "nvapi-xxx" and "your_xxx_here"
-if (!apiKey || apiKey.startsWith("nvapi-xxx") || apiKey.includes("your")) {
-  throw new Error(
-    "[NVIDIA] NVIDIA_API_KEY está ausente o aún es el placeholder. " +
-      "Please fill in your key in the .env file."
-  );
+// ── Validate required env vars (LAZY) ──────────────────────
+// PRODUCTION CLOSURE FIX: validation moved from import-time to first-use.
+// Rationale: importing modules that transitively import this config
+// (e.g. the tool registry, used by the deterministic test suite with
+// fakes) must NOT throw when NVIDIA_API_KEY is absent. The system
+// remains fail-closed: the first real LLM call throws a clear error.
+function resolveApiKey(): string {
+  const apiKey = process.env.NVIDIA_API_KEY;
+  // FIX (QUAL-C3): catch both placeholder patterns — "nvapi-xxx" and "your_xxx_here"
+  if (!apiKey || apiKey.startsWith("nvapi-xxx") || apiKey.includes("your")) {
+    throw new Error(
+      "[NVIDIA] NVIDIA_API_KEY está ausente o aún es el placeholder. " +
+        "Please fill in your key in the .env file."
+    );
+  }
+  return apiKey;
 }
 
-// ── Singleton client ───────────────────────────────────────
+let _client: OpenAI | null = null;
+
+function getClient(): OpenAI {
+  if (!_client) {
+    _client = new OpenAI({
+      baseURL: NVIDIA_CONFIG.baseURL,
+      apiKey: resolveApiKey(),
+      defaultHeaders: {
+        "User-Agent": "AGENTE-LEADS/1.0 (Node.js; NVIDIA-NIM-Compatible)",
+        Accept: "application/json",
+      },
+      timeout: 120_000,   // 120s — GLM 5.3 Flash reasoning can take 30-60s
+      maxRetries: 0,     // We handle retries ourselves (exponential back-off)
+    });
+  }
+  return _client;
+}
+
+// ── Singleton client (lazy proxy) ──────────────────────────
 // The openai SDK is used because NVIDIA NIM exposes an OpenAI-compatible API.
-export const nvidiaNIMClient = new OpenAI({
-  baseURL: NVIDIA_CONFIG.baseURL,
-  apiKey,
-  defaultHeaders: {
-    "User-Agent": "AGENTE-LEADS/1.0 (Node.js; NVIDIA-NIM-Compatible)",
-    Accept: "application/json",
+// The Proxy keeps every existing import site unchanged while deferring
+// both key validation and client construction to first property access.
+export const nvidiaNIMClient: OpenAI = new Proxy({} as OpenAI, {
+  get(_target, prop) {
+    const real = getClient() as any;
+    const value = Reflect.get(real, prop, real);
+    return typeof value === "function" ? value.bind(real) : value;
   },
-  timeout: 120_000,   // 120s — GLM 5.3 Flash reasoning can take 30-60s
-  maxRetries: 0,     // We handle retries ourselves (exponential back-off)
 });
+
+/** Explicit accessor (preferred for new code) — same lazy semantics. */
+export function getNvidiaNIMClient(): OpenAI {
+  return getClient();
+}
 
 // ── Exponential retry wrapper ──────────────────────────────
 export async function withRetry<T>(

@@ -8,21 +8,26 @@
     "start": "node dist/index.js",
     "build": "tsc",
     "typecheck": "tsc --noEmit",
-    "test": "node --test --test-concurrency=1 --import tsx tests/*.test.ts",
-    "test:e2e": "node --test --test-concurrency=1 --import tsx tests/e2e.test.ts"
+    "test": "node --test --experimental-test-isolation=none --test-force-exit --expose-gc --import tsx tests/*.test.ts",
+    "test:e2e": "node --test --experimental-test-isolation=none --test-force-exit --expose-gc --import tsx tests/e2e.test.ts",
+    "doctor": "tsx src/scripts/doctor_cli.ts"
   },
   "dependencies": {
-    "grammy": "^1.31.0",
-    "openai": "^4.65.0",
-    "better-sqlite3": "^11.5.0",
+    "better-sqlite3": "^13.0.3",
     "dotenv": "^16.4.5",
+    "form-data": "^4.0.0",
+    "grammy": "^1.31.0",
     "node-fetch": "^3.3.2",
-    "form-data": "^4.0.0"
+    "openai": "^4.65.0"
   },
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.11",
     "@types/node": "^22.0.0",
     "tsx": "^4.19.0",
     "typescript": "^5.6.0"
+  },
+  "allowScripts": {
+    "better-sqlite3@11.10.0": true,
+    "esbuild@0.27.4": true
   }
 }

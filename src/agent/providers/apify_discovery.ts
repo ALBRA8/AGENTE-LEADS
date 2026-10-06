@@ -64,6 +64,9 @@ export class ApifyDiscoveryProvider implements DiscoveryProvider {
           maxPagesPerQuery: 1,
           resultsPerPage: 10,
         }),
+        // §13 provider contract: every provider MUST have a timeout.
+        // Apify run-sync actors can take 30-90s — 120s ceiling.
+        signal: AbortSignal.timeout(120_000),
       });
 
       if (!res.ok) {

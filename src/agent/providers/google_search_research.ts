@@ -68,6 +68,8 @@ export class GoogleSearchResearchProvider implements ResearchProvider {
           maxPagesPerQuery: 1,
           resultsPerPage: 5,
         }),
+        // §13 provider contract: every provider MUST have a timeout.
+        signal: AbortSignal.timeout(120_000),
       });
 
       if (!res.ok) {

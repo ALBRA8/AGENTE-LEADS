@@ -31,6 +31,9 @@ import { inferred, type EvidenceRecord } from "../core/evidence.js";
 import type { ExecutionRecorder } from "../core/execution.js";
 import type { EmailOutreachProvider, WhatsAppOutreachProvider, OutreachInput, OutreachResult } from "../providers/outreach.js";
 import { CRMAlbraHooks } from "./crm_albra_hooks.js";
+import { ensureAgentInfraTables } from "../storage/agent_infra.js";
+import { getDb } from "../storage/lead_intelligence.js";
+import { createHash } from "crypto";
 
 export interface OutreachInput_Pipeline {
   leads: Lead[];
@@ -168,7 +171,28 @@ export async function runOutreach(
       continue;
     }
 
-    // 6. Actually send via the configured provider
+    // 6. IDEMPOTENCY (§25): a retry/restart must never send a duplicate
+    //    message. Key = lead_id + channel + offer hash. If the same lead
+    //    was already sent this exact proposal, skip with a clear reason.
+    const idempotencyKey = buildIdempotencyKey(lead, channel, input.offer_description);
+    if (!dryRun) {
+      ensureAgentInfraTables();
+      const already = getDb()
+        .prepare("SELECT id, message_id FROM outreach_log WHERE idempotency_key = ? AND status = 'sent'")
+        .get(idempotencyKey) as { id: number; message_id: string } | undefined;
+      if (already) {
+        results.push({
+          lead, channel,
+          status: "skipped",
+          skip_reason: `already_sent (idempotency: outreach_log #${already.id}, message ${already.message_id ?? "n/a"})`,
+        });
+        skipped++;
+        skipReasons.set("already_sent_idempotency", (skipReasons.get("already_sent_idempotency") ?? 0) + 1);
+        continue;
+      }
+    }
+
+    // 7. Actually send via the configured provider
     const outreachInput: OutreachInput = {
       to: channel === "email" ? lead.email! : lead.phone!,
       subject: `Propuesta para ${lead.name}`,
@@ -180,6 +204,15 @@ export async function runOutreach(
 
     if (sendResult.ok && sendResult.data) {
       sent++;
+
+      // Register in outreach_log for idempotency (§25) — AFTER a real send.
+      ensureAgentInfraTables();
+      getDb()
+        .prepare(
+          "INSERT OR IGNORE INTO outreach_log (idempotency_key, lead_id, channel, message_id, status) VALUES (?, ?, ?, ?, 'sent')"
+        )
+        .run(idempotencyKey, lead.id ?? lead.name, channel, sendResult.data.message_id ?? null);
+
       // Attach evidence record
       const ev: EvidenceRecord = inferred(
         "outreach_sent",
@@ -293,4 +326,14 @@ function buildProposalPrompt(lead: Lead, offerDescription: string, style: string
   lines.push(`3. Explains how the seller's offer helps`);
   lines.push(`4. Ends with ONE clear call to action`);
   return lines.join("\n");
+}
+
+/**
+ * §25 idempotency key — deterministic: lead_id + channel + sha(offer).
+ * Same lead + same channel + same offer → same key → the second attempt
+ * (retry, restart, duplicate LLM call) is skipped instead of re-sent.
+ */
+function buildIdempotencyKey(lead: Lead, channel: string, offer: string): string {
+  const offerHash = createHash("sha1").update(offer ?? "").digest("hex").slice(0, 12);
+  return `ol_${lead.id ?? lead.name}_${channel}_${offerHash}`;
 }

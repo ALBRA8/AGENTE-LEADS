@@ -6,6 +6,7 @@
 // ============================================================
 
 export type ErrorType =
+  // ── Original P0.10 taxonomy (preserved — do not rename) ──
   | "OK"
   | "TEMPORARY_FAILURE"
   | "AUTH_FAILURE"
@@ -13,7 +14,15 @@ export type ErrorType =
   | "EMPTY_RESULT"
   | "INVALID_INPUT"
   | "TIMEOUT"
-  | "PROVIDER_UNAVAILABLE";
+  | "PROVIDER_UNAVAILABLE"
+  // ── Production closure extension (§15 taxonomy) ──
+  | "VALIDATION_ERROR"   // a validation rule rejected the data (lead-level)
+  | "PARSING_ERROR"      // response payload could not be parsed
+  | "DUPLICATE"          // duplicate detection triggered
+  | "NOT_FOUND"          // a specific requested entity does not exist
+  | "POLICY_ERROR"       // action blocked by policy (e.g. outreach without consent)
+  | "NETWORK_ERROR"      // transport-level network failure (retryable)
+  | "INTERNAL_ERROR";    // unexpected internal failure (bug)
 
 export interface ProviderError {
   type: ErrorType;
@@ -28,6 +37,7 @@ const RETRYABLE_TYPES: ReadonlySet<ErrorType> = new Set([
   "TIMEOUT",
   "RATE_LIMIT",
   "PROVIDER_UNAVAILABLE",
+  "NETWORK_ERROR",
 ]);
 
 export function makeError(

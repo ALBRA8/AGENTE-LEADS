@@ -10,7 +10,10 @@ import dotenv from "dotenv";
 
 dotenv.config();
 
-const DB_PATH = process.env.DB_PATH ?? "./data/opengravity.db";
+// PRODUCTION CLOSURE FIX: default was "./data/opengravity.db" (name leaked
+// from another project). The canonical conversations DB is agente-leads.db
+// per README/.env.example.
+const DB_PATH = process.env.DB_PATH ?? "./data/agente-leads.db";
 
 // Ensure the data directory exists
 const dir = path.dirname(DB_PATH);
@@ -192,6 +195,16 @@ export function upsertLead(lead: {
 
 export function getLeadByEmail(email: string) {
   return db.prepare(`SELECT * FROM leads WHERE email = ?`).get(email);
+}
+
+/**
+ * PRODUCTION CLOSURE: explicit close for tests / graceful shutdown.
+ * The conversations DB is opened at module load; leaving it open in
+ * short-lived test processes makes its native destructor run during
+ * V8 teardown (known better-sqlite3 crash). Idempotent.
+ */
+export function closeConversationsDb(): void {
+  try { db.close(); } catch {}
 }
 
 export default db;

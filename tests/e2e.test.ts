@@ -17,6 +17,7 @@ import { setupTestEnv, cleanupTestEnv } from "./setup.js";
 import { runLeadPipeline } from "../src/agent/pipelines/orchestrator.js";
 import { MockDiscoveryProvider } from "../src/agent/providers/mock_discovery.js";
 import { getAllTools } from "../src/agent/registry.js";
+import { getExecution, getAllLeads } from "../src/agent/storage/lead_intelligence.js";
 import type { ResearchProvider, VerificationProvider, ScrapingProvider } from "../src/agent/providers/types.js";
 
 // Fakes for research/verification/scraping so the E2E is reproducible without network
@@ -257,4 +258,125 @@ test("E2E — AGENTE LEADS pipeline", async (t) => {
     // enrich_lead_profile should clarify it's research infraestructura, not intelligence
     assert.ok(enrichLead!.definition.function.description.toLowerCase().includes("infraestructura"));
   });
+
+  // ── PRODUCTION CLOSURE §36 — preservation + CRM event contract ──
+  await t.test("§36: final result preserves lead, score, evidence, execution_id, provenance, status", async () => {
+    setupTestEnv();
+    try {
+      const result = await runLeadPipeline(
+        {
+          query: "restaurantes veganos",
+          location: "Medellín",
+          niche: "vegano",
+          min_followers: 5000,
+        },
+        {
+          discovery: [new MockDiscoveryProvider()],
+          research: fakeResearch,
+          verification: fakeVerifier,
+          scraping: fakeScraping,
+        }
+      );
+      assert.ok(result.execution_id.startsWith("exec_"));
+
+      // 1. The persisted lead carries id + score + evidence + provenance + status
+      const reportJson = JSON.parse(result.report_json);
+      assert.ok(reportJson.top.length >= 1);
+      const firstLeadName = reportJson.top[0].name;
+
+      // Find the stored lead by name through the DB
+      const stored = getAllStoredLeadsByName(firstLeadName);
+      assert.ok(stored, "lead must be persisted");
+      assert.ok(stored.id!.startsWith("lead_"));
+      assert.equal(stored.research_state, "VALIDATED"); // status preserved
+      assert.ok(typeof stored.lead_score === "number" && stored.lead_score > 0); // score preserved
+      assert.ok(stored.evidence.length > 0); // evidence preserved
+      const emailEv = stored.evidence.find((e) => e.field === "email");
+      assert.ok(emailEv, "email evidence preserved");
+      assert.ok(emailEv!.source && emailEv!.source.length > 0, "provenance preserved");
+      assert.ok(emailEv!.retrieved_at, "timestamp preserved");
+      assert.ok(stored.sources.length > 0, "source chain preserved");
+      // §9: evidence carries truth_level going forward
+      assert.ok(emailEv!.truth_level !== undefined, "truth_level present on new evidence");
+
+      // 2. The execution trace is persisted and reconstructable
+      const trace = getExecution(result.execution_id);
+      assert.ok(trace, "execution trace persisted");
+      assert.equal(trace!.outcome, "success");
+      assert.ok(trace!.steps.length > 0);
+      assert.ok(trace!.steps.some((s) => s.name.startsWith("discovery.")));
+      assert.ok(trace!.steps.some((s) => s.name.startsWith("validation.")));
+    } finally {
+      cleanupTestEnv();
+    }
+  });
+
+  await t.test("§36: pipeline fires contractual CRM events (LEAD_QUALIFIED envelope)", async () => {
+    setupTestEnv();
+    try {
+      const http = await import("http");
+      const received: any[] = [];
+      const server = http.createServer((req, res) => {
+        let body = "";
+        req.on("data", (c) => (body += c));
+        req.on("end", () => {
+          received.push(JSON.parse(body));
+          res.writeHead(200);
+          res.end('{"ok":true}');
+        });
+      });
+      await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
+      const port = (server.address() as any).port;
+
+      // Wire CRM webhook via env (the orchestrator reads it)
+      const prevUrl = process.env.CRM_ALBRA_WEBHOOK_URL;
+      process.env.CRM_ALBRA_WEBHOOK_URL = `http://127.0.0.1:${port}/crm`;
+      try {
+        const result = await runLeadPipeline(
+          {
+            query: "restaurantes veganos",
+            location: "Medellín",
+            niche: "vegano",
+            min_followers: 5000,
+          },
+          {
+            discovery: [new MockDiscoveryProvider()],
+            research: fakeResearch,
+            verification: fakeVerifier,
+            scraping: fakeScraping,
+          }
+        );
+
+        // §36 flow: USER → ... → REPORT → CRM EVENT
+        assert.ok(received.length >= 1, "CRM must receive events");
+        const completed = received.find((e) => e.event_type === "execution.completed");
+        assert.ok(completed, "execution.completed event received");
+        // §26 envelope
+        assert.ok(completed.event_id.startsWith("evt_"));
+        assert.equal(completed.source_agent, process.env.AGENT_NAME ?? "AGENTE-LEADS");
+        assert.equal(completed.target_agent, "CRM-ALBRA");
+        assert.equal(completed.execution_id, result.execution_id);
+        assert.equal(completed.correlation_id, result.execution_id);
+
+        const scored = received.filter((e) => e.event_type === "lead.scored");
+        assert.equal(scored.length, 2, "one lead.scored event per stored lead");
+        for (const ev of scored) {
+          assert.ok(ev.lead_id.startsWith("lead_"));
+          assert.ok(typeof ev.payload.score === "number");
+          assert.ok(Array.isArray(ev.evidence));
+        }
+      } finally {
+        if (prevUrl === undefined) delete process.env.CRM_ALBRA_WEBHOOK_URL;
+        else process.env.CRM_ALBRA_WEBHOOK_URL = prevUrl;
+        await new Promise<void>((r) => server.close(() => r()));
+      }
+    } finally {
+      cleanupTestEnv();
+    }
+  });
 });
+
+// Helper: find stored leads by name (they may share names — returns first)
+function getAllStoredLeadsByName(name: string) {
+  return getAllLeads(50).find((l) => l.name === name) ?? null;
+}

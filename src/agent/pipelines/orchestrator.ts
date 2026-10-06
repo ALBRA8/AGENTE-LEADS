@@ -25,6 +25,9 @@ import { runScoring } from "./scoring.js";
 import { runIntelligence } from "./intelligence.js";
 import { generateReport } from "./report.js";
 import { saveExecution, saveLead } from "../storage/lead_intelligence.js";
+import { persistProviderMetrics } from "./quality.js";
+import { consolidateExecution } from "../memory/memorydv.js";
+import { CRMAlbraHooks } from "./crm_albra_hooks.js";
 
 export interface ParsedIntent {
   /** What the user is looking for, e.g. "restaurantes veganos" */
@@ -202,6 +205,26 @@ export async function runLeadPipeline(
 
   const trace_done = trace.finish("success", `${intelligencedLeads.length} leads stored`);
   saveExecution(trace_done);
+
+  // ── 9. POST-RUN SUBSYSTEMS (non-blocking, best-effort) ─────
+  // §14 — persist per-provider quality metrics for historical analysis
+  try { persistProviderMetrics(trace_done); } catch {}
+  // §22 — consolidate execution learnings into MemoryDV (provenance-gated)
+  try { consolidateExecution(trace_done); } catch {}
+  // §26 — contractual CRM events (lead.scored + execution.completed)
+  try {
+    const crm = new CRMAlbraHooks({
+      webhook_url: process.env.CRM_ALBRA_WEBHOOK_URL || undefined,
+      secret: process.env.CRM_ALBRA_SECRET || undefined,
+      enabled: Boolean(process.env.CRM_ALBRA_WEBHOOK_URL),
+    });
+    if (crm.isConfigured()) {
+      for (const lead of scoredLeads) {
+        await crm.fireLeadScored(lead, lead.lead_score ?? 0, { execution_id: trace_done.id });
+      }
+      await crm.fireExecutionCompleted(trace_done);
+    }
+  } catch {}
 
   return {
     report_text: report.text,

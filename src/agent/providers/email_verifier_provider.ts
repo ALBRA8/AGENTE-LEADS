@@ -39,7 +39,7 @@ export class RapidEmailVerificationProvider implements VerificationProvider {
     try {
       const res = await fetch(
         `${VERIFIER_BASE}?email=${encodeURIComponent(email)}`,
-        { headers: { accept: "application/json" } }
+        { headers: { accept: "application/json" }, signal: AbortSignal.timeout(15_000) }
       );
       if (!res.ok) {
         return {
@@ -84,6 +84,7 @@ export class RapidEmailVerificationProvider implements VerificationProvider {
       const res = await fetch(`https://${domain}`, {
         method: "HEAD",
         redirect: "manual", // don't follow redirects to private IPs
+        signal: AbortSignal.timeout(10_000),
       });
       return {
         ok: true,
@@ -106,7 +107,7 @@ export class RapidEmailVerificationProvider implements VerificationProvider {
     const urlCheck = assertPublicUrl(url);
     if (!urlCheck.ok) return { ok: false, error: urlCheck.error };
     try {
-      const res = await fetch(url, { method: "HEAD", redirect: "manual" });
+      const res = await fetch(url, { method: "HEAD", redirect: "manual", signal: AbortSignal.timeout(10_000) });
       return {
         ok: true,
         data: {

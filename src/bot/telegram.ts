@@ -129,6 +129,16 @@ bot.command("health", async (ctx) => {
   await ctx.reply(formatHealth(h), { parse_mode: "Markdown" });
 });
 
+// ── /doctor command – PRODUCTION CLOSURE §32: full audit ─────
+bot.command("doctor", async (ctx) => {
+  const { runDoctor, formatDoctorReport } = await import("../agent/doctor.js");
+  const report = runDoctor();
+  const text = formatDoctorReport(report);
+  for (const chunk of splitMessage(text)) {
+    await ctx.reply(chunk);
+  }
+});
+
 // ── Text message handler ───────────────────────────────────
 bot.on("message:text", async (ctx) => {
   const userId = ctx.from!.id.toString();

@@ -74,7 +74,6 @@ function initDb(dbPath: string): BetterDB {
     CREATE INDEX IF NOT EXISTS idx_leads_username ON lead_intelligence_leads(username);
     CREATE INDEX IF NOT EXISTS idx_leads_website ON lead_intelligence_leads(website);
     CREATE INDEX IF NOT EXISTS idx_leads_dedup ON lead_intelligence_leads(dedup_signature);
-
     CREATE TABLE IF NOT EXISTS lead_intelligence_evidence (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       lead_id TEXT NOT NULL,
@@ -86,6 +85,7 @@ function initDb(dbPath: string): BetterDB {
       confidence TEXT NOT NULL,
       evidence TEXT,
       inferred_from TEXT,
+      truth_level TEXT,
       FOREIGN KEY (lead_id) REFERENCES lead_intelligence_leads(id) ON DELETE CASCADE
     );
     CREATE INDEX IF NOT EXISTS idx_evidence_lead ON lead_intelligence_evidence(lead_id, field);
@@ -120,11 +120,56 @@ function initDb(dbPath: string): BetterDB {
       created_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
   `);
+
+  // Migration for DBs created before the §9 truth_level column
+  // (idempotent: ALTER TABLE fails harmlessly if the column exists).
+  try {
+    conn.exec("ALTER TABLE lead_intelligence_evidence ADD COLUMN truth_level TEXT");
+  } catch {
+    // column already exists
+  }
+
   return conn;
 }
 
+// ── Statement cache (native-crash fix) ─────────────────────
+// PRODUCTION CLOSURE ROOT FIX for the known better-sqlite3 teardown
+// crash ("RemoveEnvironmentCleanupHook: (env) != nullptr"):
+//
+// Every `db.prepare(sql)` used to create a NEW Statement wrapper that
+// became garbage immediately after the call. Whether V8 collected those
+// wrappers before env teardown was a RACE — collecting them DURING
+// teardown runs Statement::~Statement() → RemoveEnvironmentCleanupHook
+// with a dead environment → native assertion → flaky test crashes.
+//
+// Fix: a Proxy over the Database instance caches every prepared
+// statement in a module-level Map (STRONG reference). No Statement is
+// ever garbage, so no destructor ever runs at teardown. Statements from
+// a closed-and-reopened connection are replaced lazily (checked via
+// .database identity); the replaced (dead) wrapper is then GC'd while
+// the environment is still valid, which is safe.
+const _stmtCache = new Map<string, any>();
+
+function makeSafeDb(conn: BetterDB): BetterDB {
+  return new Proxy(conn, {
+    get(target, prop) {
+      if (prop === "prepare") {
+        return (sql: string, ...rest: unknown[]) => {
+          const cached = _stmtCache.get(sql);
+          if (cached && (cached as any).database === target) return cached;
+          const st = (target.prepare as any)(sql, ...rest);
+          _stmtCache.set(sql, st);
+          return st;
+        };
+      }
+      const value = Reflect.get(target, prop, target);
+      return typeof value === "function" ? (value as any).bind(target) : value;
+    },
+  }) as unknown as BetterDB;
+}
+
 function db(): BetterDB {
-  if (!_db) _db = initDb(getDbPath());
+  if (!_db) _db = makeSafeDb(initDb(getDbPath()));
   return _db;
 }
 
@@ -156,16 +201,30 @@ export function resetStorageForTests(): void {
 // At process exit, properly close the DB so prepared statements are freed
 // while the V8 environment is still valid. This prevents the native crash:
 //   node::RemoveEnvironmentCleanupHook: Assertion failed: (env) != nullptr
-// We register both 'beforeExit' (async before exit) and 'exit' (sync at exit)
-// to maximize the chance of a clean close before GC runs.
+//
+// PRODUCTION CLOSURE FIX: previously we registered BOTH 'beforeExit' and
+// 'exit'. 'beforeExit' fires EVERY time the event loop drains — including
+// between test() invocations — which closed the DB mid-run and forced a
+// reopen (statement churn + different-path reopen → "no such table" and
+// teardown races). The close now happens ONLY in the synchronous 'exit'
+// phase. Tests additionally close explicitly via closeLeadDbForTests().
 const _closeDb = () => {
   if (_db) {
     try { _db.close(); } catch {}
     _db = null;
   }
+  // Release the cached Statement wrappers IMMEDIATELY so the GC can
+  // finalize them while the V8 environment is still valid (the final
+  // teardown collects the whole module graph — including this Map —
+  // with a dead environment, which triggers the native assertion).
+  _stmtCache.clear();
 };
-process.on("beforeExit", _closeDb);
 process.on("exit", _closeDb);
+
+/** Explicit close hook (tests / graceful shutdown) — idempotent. */
+export function closeLeadDbForTests(): void {
+  _closeDb();
+}
 
 // (Schema is created inside initDb() — see above. No need for a top-level exec.)
 
@@ -227,12 +286,13 @@ function _saveLeadImpl(lead: Lead): StoredLead {
     db().prepare("DELETE FROM lead_intelligence_evidence WHERE lead_id = ?").run(id);
     const stmt = db().prepare(`
       INSERT INTO lead_intelligence_evidence
-        (lead_id, field, value, status, source, retrieved_at, confidence, evidence, inferred_from)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        (lead_id, field, value, status, source, retrieved_at, confidence, evidence, inferred_from, truth_level)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
     for (const e of lead.evidence) {
       stmt.run(id, e.field, e.value ? String(e.value) : null, e.status, e.source ?? null,
-        e.retrieved_at, e.confidence, e.evidence, e.inferred_from ? JSON.stringify(e.inferred_from) : null);
+        e.retrieved_at, e.confidence, e.evidence, e.inferred_from ? JSON.stringify(e.inferred_from) : null,
+        (e as any).truth_level ?? null);
     }
   }
 
@@ -273,6 +333,7 @@ function rowToLead(row: any): StoredLead {
     confidence: e.confidence,
     evidence: e.evidence ?? "",
     inferred_from: e.inferred_from ? JSON.parse(e.inferred_from) : undefined,
+    ...(e.truth_level ? { truth_level: e.truth_level } : {}),
   }));
 
   // CRITICAL FIX (ARCH-C1): reconstruct lead_score from evidence records
