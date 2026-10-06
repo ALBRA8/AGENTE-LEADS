@@ -25,3 +25,13 @@ playwright-report/
 Thumbs.db
 .vscode/
 .idea/
+
+# Dashboard (Next.js)
+dashboard/node_modules/
+dashboard/.next/
+dashboard/.env
+dashboard/dev.log
+dashboard/dev.log.*
+dashboard/data/
+dashboard/db/
+dashboard/download/

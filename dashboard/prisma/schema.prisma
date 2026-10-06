@@ -1,0 +1,263 @@
+// ============================================================
+// AGENTE LEADS — Prisma schema
+// ============================================================
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+// ── Auth & Users ──────────────────────────────────────────────
+model User {
+  id            String    @id @default(cuid())
+  email         String    @unique
+  name          String?
+  passwordHash  String
+  role          String    @default("user") // "admin" | "user"
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  offers        Offer[]
+  prospects     Prospect[]
+  proposals     Proposal[]
+  notes         Note[]
+  searches      SearchJob[]
+  telegramLinks TelegramUser[]
+  outcomes      OutcomeEvent[]
+}
+
+model TelegramUser {
+  id            String   @id @default(cuid())
+  telegramId    String   @unique
+  username      String?
+  firstName     String?
+  lastName      String?
+  userId        String?  // link to internal User (optional)
+  user          User?    @relation(fields: [userId], references: [id])
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+}
+
+// ── Offers (what the user sells) ──────────────────────────────
+model Offer {
+  id              String   @id @default(cuid())
+  userId          String
+  user            User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  name            String   // "Marketing digital para clínicas de estética"
+  description     String   // full offer description
+  priceRange      String?  // "$500 - $2000 USD"
+  idealCustomer   String?  // "Clínicas de estética con 1-5 sedes"
+  targetNiches    String?  // comma-separated: "esthetic clinics, dental, spa"
+  cities          String?  // comma-separated: "Bogotá, Medellín"
+  countries       String?  // comma-separated: "Colombia"
+  budget          String?  // optional: client budget tier
+  sector          String?  // optional: target sector
+  isActive        Boolean  @default(true)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  prospects       Prospect[]
+  proposals       Proposal[]
+  searchJobs      SearchJob[]
+}
+
+// ── Search jobs (audit trail of searches) ──────────────────────
+model SearchJob {
+  id              String   @id @default(cuid())
+  userId          String
+  user            User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  offerId         String?
+  offer           Offer?   @relation(fields: [offerId], references: [id], onDelete: SetNull)
+  city            String
+  country         String?
+  category        String?
+  keywords        String?
+  radius          Int?
+  sourceAdapter   String   // "mock" | "google_places" | "web_scraper"
+  status          String   @default("pending") // pending, running, completed, failed
+  foundCount      Int      @default(0)
+  qualifiedCount  Int      @default(0)
+  tierACount      Int      @default(0)
+  tierBCount      Int      @default(0)
+  tierCCount      Int      @default(0)
+  tierFCount      Int      @default(0)
+  errorMessage    String?
+  startedAt       DateTime?
+  completedAt     DateTime?
+  createdAt       DateTime @default(now())
+
+  prospects       Prospect[]
+}
+
+// ── Prospects (the CRM core) ──────────────────────────────────
+model Prospect {
+  id              String   @id @default(cuid())
+  userId          String
+  user            User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  offerId         String?
+  offer           Offer?   @relation(fields: [offerId], references: [id], onDelete: SetNull)
+  searchJobId     String?
+  searchJob       SearchJob? @relation(fields: [searchJobId], references: [id], onDelete: SetNull)
+
+  // ── Business info
+  name            String
+  category        String?
+  city            String?
+  country         String?
+  address         String?
+  website         String?
+  phone           String?
+  email           String?
+  socialLinks     String?  // JSON string of {instagram, facebook, linkedin, ...}
+  description     String?
+
+  // ── Source traceability
+  source          String   // "mock" | "google_places" | "web_scraper" | "manual"
+  sourceUrl       String?
+
+  // ── 5-layer qualification
+  tier            String   @default("PENDING") // "TIER_A" | "TIER_B" | "TIER_C" | "TIER_F" | "PENDING"
+  nicheFit        String?  // "high" | "medium" | "low" | "none"
+  painDetected    Boolean  @default(false)
+  painType        String?  // "outdated_website" | "no_social_media" | ...
+  painEvidence    String?  // LLM-generated explanation
+  intentSignals   String?  // JSON array of detected intent signals
+  disqualifyReason String? // when tier = TIER_F
+  qualificationDetails String? // full JSON of qualification pipeline
+
+  // ── Tech stack + freshness (layer 6-7 enrichment)
+  techStack       String?  // JSON: {cms, framework, plugins, theme, detectedAt}
+  freshnessData  String?  // JSON: {lastModified, copyrightYear, sslAgeDays, isResponsive, hasStructuredData, hasBookingSystem, daysSinceLastUpdate}
+  lookAlikeScore  Float?   // 0-100, similarity to user's best customers
+  leadScore       Int?     // P1.1: Lead Score 0-100 (transparent, deterministic)
+  intelligenceSummary String? // P1.2: LLM-generated summary (INFERRED, not observed fact)
+  intelligenceOpportunity String? // small | medium | large | unknown
+  intelligenceAngle String?    // suggested outreach angle
+  intelligenceConfidence String? // high | medium | low | none
+
+  // ── CRM state
+  status          String   @default("NEW") // NEW | CONTACTED | INTERESTED | NOT_INTERESTED | CLIENT
+  isFavorite      Boolean  @default(false)
+  lastContactedAt DateTime?
+
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  proposals       Proposal[]
+  notes           Note[]
+  statusHistory   StatusHistory[]
+  outcomes        OutcomeEvent[]
+}
+
+model StatusHistory {
+  id          String   @id @default(cuid())
+  prospectId  String
+  prospect    Prospect @relation(fields: [prospectId], references: [id], onDelete: Cascade)
+  fromStatus  String?
+  toStatus    String
+  reason      String?
+  createdAt   DateTime @default(now())
+}
+
+// ── Proposals (AI-generated) ──────────────────────────────────
+model Proposal {
+  id            String   @id @default(cuid())
+  userId        String
+  user          User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  prospectId    String
+  prospect      Prospect @relation(fields: [prospectId], references: [id], onDelete: Cascade)
+  offerId       String?
+  offer         Offer?   @relation(fields: [offerId], references: [id], onDelete: SetNull)
+
+  style         String   // "professional" | "friendly" | "direct" | "persuasive"
+  content       String   // full proposal text
+  editedContent String?  // user-edited version
+  isEdited      Boolean  @default(false)
+  isSent        Boolean  @default(false)
+  sentAt        DateTime?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+}
+
+// ── Notes ─────────────────────────────────────────────────────
+model Note {
+  id          String   @id @default(cuid())
+  userId      String
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  prospectId  String
+  prospect    Prospect @relation(fields: [prospectId], references: [id], onDelete: Cascade)
+  content     String
+  createdAt   DateTime @default(now())
+}
+
+// ── Integration settings (per-user) ───────────────────────────
+model Integration {
+  id          String   @id @default(cuid())
+  userId      String   @unique
+  // Telegram
+  telegramBotToken String?
+  telegramAllowedIds String? // comma-separated telegram user IDs
+  // Email (SendGrid)
+  sendgridApiKey   String?
+  sendgridFromEmail String?
+  // WhatsApp Cloud API
+  whatsappToken    String?
+  whatsappPhoneId  String?
+  // Google Places
+  googlePlacesApiKey String?
+  // Apify (optional)
+  apifyToken       String?
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+}
+
+// ── Closed-loop learning: outcomes feed flywheel ────────────────
+model OutcomeEvent {
+  id            String   @id @default(cuid())
+  userId        String
+  user          User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  prospectId    String
+  prospect      Prospect @relation(fields: [prospectId], references: [id], onDelete: Cascade)
+  outcome       String   // "CLIENT" | "NOT_INTERESTED" | "UNREACHABLE" | "DUPLICATE" | "FOLLOW_UP_LATER"
+  reason        String?
+  closedValue   Int?     // USD value if CLIENT
+  createdAt     DateTime @default(now())
+}
+
+// ── Multi-query expansion log ───────────────────────────────────
+model QueryExpansion {
+  id              String   @id @default(cuid())
+  searchJobId     String   @unique
+  originalQuery   String
+  expandedQueries String   // JSON array of generated queries
+  generatedAt     DateTime @default(now())
+}
+
+// ── Learned insights from closed-loop ──────────────────────────
+model LearnedInsight {
+  id          String   @id @default(cuid())
+  userId      String   @unique
+  insightText String   // human-readable: "Tier A with <50 reviews convert 3x"
+  feature     String   // the feature name (e.g. "googleReviewsCount")
+  condition   String   // the value pattern (e.g. "<50")
+  conversionRate Float  // observed conversion rate
+  sampleSize  Int      // how many prospects matched
+  liftFactor  Float    // multiplier to apply to lookAlikeScore
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}
+
+// ── MCP sessions (other systems connecting to AGENTE LEADS) ────
+model McpSession {
+  id          String   @id @default(cuid())
+  userId      String   // which AGENTE LEADS user this session acts for
+  clientName  String   // human identifier: "claude-desktop", "zapier"
+  token       String   @unique @default(cuid())
+  scopes      String   // JSON array: ["read:prospects", "write:outcomes", ...]
+  lastUsedAt  DateTime?
+  createdAt   DateTime @default(now())
+}
