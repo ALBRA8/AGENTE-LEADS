@@ -33,7 +33,8 @@ export async function POST(req: Request) {
         email: email.toLowerCase(),
         name: name || null,
         passwordHash: await hashPassword(password),
-        role: "admin",
+        // P0-A: public signup must never grant admin privileges.
+        role: "user",
       },
     });
     return NextResponse.json({ ok: true, userId: user.id });

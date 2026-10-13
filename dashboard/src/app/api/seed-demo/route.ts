@@ -1,10 +1,19 @@
-// Seed demo user + offer + sample prospects on first call
+// Seed demo user + offer + sample prospects on first call.
+// P0-A hardening:
+//  - Gated behind ALLOW_DEMO_SEED=1 (opt-in). When disabled (default) responds
+//    404 without revealing that this endpoint exists.
+//  - The demo password is NEVER included in the API response.
 import { NextResponse } from "next/server";
-import { ensureDemoUser } from "@/lib/auth";
+import { ensureDemoUser, isDemoSeedEnabled } from "@/lib/auth";
 import { db } from "@/lib/db";
 import { mockAestheticClinics } from "@/lib/leads/mock-source-data";
 
 export async function POST() {
+  // Disabled by default: masquerade as a generic 404 (no endpoint discovery).
+  if (!isDemoSeedEnabled()) {
+    return new NextResponse("Not Found", { status: 404 });
+  }
+
   try {
     const user = await ensureDemoUser();
 
@@ -70,9 +79,11 @@ export async function POST() {
       }
     }
 
+    // P0-A: never leak the demo password through the API.
     return NextResponse.json({
-      ok: true,
-      user: { email: user.email, password: "agente123" },
+      demo: true,
+      email: user.email,
+      note: "contraseña demo no se expone por API",
     });
   } catch (e: any) {
     return NextResponse.json({ error: e.message }, { status: 500 });

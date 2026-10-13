@@ -65,17 +65,34 @@ export async function hashPassword(p: string) {
   return bcrypt.hash(p, 10);
 }
 
-// Helper to ensure a demo admin user exists (used by /api/seed-demo)
+// ============================================================
+// Demo seed (P0-A hardening)
+// ============================================================
+
+// Feature flag: demo seeding is OPT-IN via ALLOW_DEMO_SEED=1.
+// Default (unset or any other value) keeps the seed endpoint disabled.
+export function isDemoSeedEnabled(): boolean {
+  return process.env.ALLOW_DEMO_SEED === "1";
+}
+
+// Demo credentials exist ONLY as internal constants of the demo seed module.
+// They must NEVER be returned by any API response (see /api/seed-demo).
+export const DEMO_USER_EMAIL = "demo@agenteleads.com";
+export const DEMO_USER_PASSWORD = "agente123";
+
+// Helper to ensure a demo user exists (used by /api/seed-demo when enabled).
+// P0-A: the demo account is least-privilege (role "user"), never an admin.
 export async function ensureDemoUser() {
-  const email = "demo@agenteleads.com";
-  const existing = await db.user.findUnique({ where: { email } });
+  const existing = await db.user.findUnique({
+    where: { email: DEMO_USER_EMAIL },
+  });
   if (existing) return existing;
   return db.user.create({
     data: {
-      email,
+      email: DEMO_USER_EMAIL,
       name: "Demo User",
-      role: "admin",
-      passwordHash: await hashPassword("agente123"),
+      role: "user",
+      passwordHash: await hashPassword(DEMO_USER_PASSWORD),
     },
   });
 }
