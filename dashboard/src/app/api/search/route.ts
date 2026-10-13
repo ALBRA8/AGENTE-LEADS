@@ -19,6 +19,7 @@ import { buildDedupCandidates } from "@/lib/leads/dedup";
 import { buildDiscoveryEvidence } from "@/lib/leads/evidence-builder";
 import { classifyDigitalPresence, confirmWeb } from "@/lib/leads/digital-presence";
 import type { DigitalPresence, RawProspect } from "@/lib/leads/types";
+import { auditPageSpeed } from "@/lib/leads/pagespeed";
 import { qualifyProspect } from "@/lib/ai/qualification";
 import { detectTechStack } from "@/lib/leads/tech-stack-detector";
 import { checkFreshness } from "@/lib/leads/freshness-checker";
@@ -320,6 +321,10 @@ export async function POST(req: NextRequest) {
         }
       : null;
 
+    // P2: candidatos a auditoría PageSpeed (contrato 5) — se llena en el
+    // bucle de calificación y se consume justo después.
+    const psiCandidates: { id: string; website: string }[] = [];
+
     if (offerCtx) {
       // Reload prospects to get the enrichment data we just saved
       const allToQualify = await db.prospect.findMany({
@@ -448,13 +453,47 @@ export async function POST(req: NextRequest) {
               intelligenceOpportunity: intel?.opportunity_size ?? null,
               intelligenceAngle: intel?.outreach_angle ?? null,
               intelligenceConfidence: intel?.confidence ?? null,
+              // P2: taxonomía FACT/INFERENCE/HYPOTHESIS/RECOMMENDATION persistida
+              intelligenceItems: intel?.items ? JSON.stringify(intel.items) : null,
             },
           });
           if (r.q.tier === "TIER_A") tierA++;
           else if (r.q.tier === "TIER_B") tierB++;
+          // P2: solo A/B con website se auditan con PageSpeed (coste/tiempo)
+          if ((r.q.tier === "TIER_A" || r.q.tier === "TIER_B") && r.p.website) {
+            psiCandidates.push({ id: r.p.id, website: r.p.website });
+          }
           else if (r.q.tier === "TIER_C") tierC++;
           else if (r.q.tier === "TIER_F") tierF++;
         }
+      }
+    }
+
+    // ── P2: PageSpeed Insights (contrato 5) para calificados A/B con web ──
+    // Batches de 2, tope 10 auditorías por job (PSI tarda ~15-25s por URL).
+    // La key opcional viene de Integration.pageSpeedApiKey (contrato 8:
+    // sin key usa la cuota anónima gratuita). El resultado (incl. estados
+    // UNREACHABLE/TIMEOUT/INVALID_URL) se persiste tal cual: es evidencia.
+    let pagespeedAudited = 0;
+    if (psiCandidates.length > 0) {
+      const psiTargets = psiCandidates.slice(0, 10);
+      for (let i = 0; i < psiTargets.length; i += 2) {
+        await Promise.all(
+          psiTargets.slice(i, i + 2).map(async (t) => {
+            try {
+              const ps = await auditPageSpeed(t.website, {
+                apiKey: integration?.pageSpeedApiKey || undefined,
+              });
+              await db.prospect.update({
+                where: { id: t.id },
+                data: { pageSpeed: JSON.stringify(ps) },
+              });
+              pagespeedAudited++;
+            } catch (e: any) {
+              console.warn(`[search] pagespeed failed for ${t.id}:`, e.message);
+            }
+          })
+        );
       }
     }
 
@@ -498,6 +537,7 @@ export async function POST(req: NextRequest) {
       partialSources: failedList.length,
       failedSources: failedList,
       providerCalls: totalProviderCalls,
+      pagespeedAudited,
     });
   } catch (e: any) {
     await db.searchJob.update({

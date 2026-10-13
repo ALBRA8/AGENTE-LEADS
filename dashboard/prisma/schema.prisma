@@ -134,6 +134,10 @@ model Prospect {
   digitalPresence String?  // contrato 3: WEB_PROPIA_CONFIRMADA | SOLO_RED_SOCIAL_O_DIRECTORIO | SIN_WEB_CONFIRMADA | WEB_PENDIENTE_DE_VERIFICAR
   evidencias     Evidence[]
 
+  // ── P2: PageSpeed + inteligencia con taxonomía ──
+  pageSpeed         String?   // P2 · Contrato 5: JSON PageSpeedResult {url, strategy, scores{performance,seo,accessibility,bestPractices}, auditedAt, status: OK|UNREACHABLE|TIMEOUT|INVALID_URL}
+  intelligenceItems String?   // P2: JSON IntelligenceItem[] {kind: FACT|INFERENCE|HYPOTHESIS|RECOMMENDATION, text}
+
   // ── 5-layer qualification
   tier            String   @default("PENDING") // "TIER_A" | "TIER_B" | "TIER_C" | "TIER_F" | "PENDING"
   nicheFit        String?  // "high" | "medium" | "low" | "none"
@@ -227,6 +231,8 @@ model Integration {
   googlePlacesApiKey String?
   // Apify (optional)
   apifyToken       String?
+  // P2: PageSpeed Insights API key opcional (gratuita; sin key usa cuota anónima)
+  pageSpeedApiKey  String?
   createdAt  DateTime @default(now())
   updatedAt  DateTime @updatedAt
 }

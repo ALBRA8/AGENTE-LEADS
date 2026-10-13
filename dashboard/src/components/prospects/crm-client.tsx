@@ -135,6 +135,44 @@ const BUSINESS_STATUS_META: Record<
   },
 };
 
+// ============================================================
+// P2 — PageSpeed (contrato 5) y taxonomía de inteligencia.
+// Maps LOCALES defensivos: el backend puede aún no enviar los campos.
+// ============================================================
+
+/** Estados PageSpeed != OK → label ES. NUNCA se muestra el error crudo (puede contener datos sensibles). */
+const PAGESPEED_STATUS_META: Record<
+  string,
+  { label: string; tone: "amber" | "slate" }
+> = {
+  UNREACHABLE: { label: "Auditoría falló: sitio inaccesible", tone: "amber" },
+  TIMEOUT: { label: "Tiempo de espera agotado", tone: "amber" },
+  INVALID_URL: { label: "URL inválida", tone: "slate" },
+};
+
+/** Taxonomía P2 de intelligenceItems. Kind desconocido → el item se descarta. */
+const INTELLIGENCE_KIND_META: Record<
+  string,
+  { label: string; color: string }
+> = {
+  FACT: {
+    label: "Hecho",
+    color: "bg-emerald-100 text-emerald-700 dark:bg-emerald-950/50 dark:text-emerald-300 border-emerald-200 dark:border-emerald-900",
+  },
+  INFERENCE: {
+    label: "Inferencia",
+    color: "bg-blue-100 text-blue-700 dark:bg-blue-950/50 dark:text-blue-300 border-blue-200 dark:border-blue-900",
+  },
+  HYPOTHESIS: {
+    label: "Hipótesis",
+    color: "bg-amber-100 text-amber-700 dark:bg-amber-950/50 dark:text-amber-300 border-amber-200 dark:border-amber-900",
+  },
+  RECOMMENDATION: {
+    label: "Recomendación",
+    color: "bg-violet-100 text-violet-700 dark:bg-violet-950/50 dark:text-violet-300 border-violet-200 dark:border-violet-900",
+  },
+};
+
 export function CrmClient() {
   const qc = useQueryClient();
   const [page, setPage] = useState(1);
@@ -875,8 +913,8 @@ function ProspectDetailDrawer({
                 </Card>
               )}
 
-              {/* Tech stack + freshness (layers 6-7) */}
-              {(p.techStack || p.freshnessData) && (
+              {/* Tech stack + freshness (layers 6-7) + PageSpeed (P2, contrato 5) */}
+              {(p.techStack || p.freshnessData || p.pageSpeed) && (
                 <Card>
                   <CardHeader>
                     <CardTitle className="text-sm flex items-center gap-2">
@@ -942,6 +980,8 @@ function ProspectDetailDrawer({
                         );
                       } catch { return null; }
                     })()}
+                    {/* P2 — Velocidad (Google PageSpeed): fila propia agrupada con los metadatos técnicos. */}
+                    <PageSpeedBadge data={p.pageSpeed ?? null} />
                     {p.lookAlikeScore != null && (
                       <div className="pt-2 border-t">
                         <div className="text-muted-foreground">Look-alike score (basado en tus clientes previos):</div>
@@ -994,6 +1034,9 @@ function ProspectDetailDrawer({
                   </CardContent>
                 </Card>
               )}
+
+              {/* P2 — Análisis inteligente (taxonomía FACT/INFERENCE/HYPOTHESIS/RECOMMENDATION). */}
+              <IntelligenceItemsList data={p.intelligenceItems ?? null} />
 
               {/* Mark outcome (closed-loop learning) */}
               <Card>
@@ -1339,4 +1382,190 @@ function FreshnessBadge({ data }: { data?: string | null }) {
   } catch {
     return <span className="text-[11px] text-muted-foreground">—</span>;
   }
+}
+
+// ============================================================
+// P2 — PageSpeed (contrato 5) y análisis inteligente (taxonomía).
+// Defensivos: parse con try/catch, typeof checks; sin datos válidos → null.
+// ============================================================
+
+/** score 0-100 finito → número; cualquier otra cosa → null (se muestra gris). */
+function finiteScoreOrNull(v: unknown): number | null {
+  return typeof v === "number" && Number.isFinite(v) ? v : null;
+}
+
+/** Mini-label de score con umbral: verde >=90, ámbar 50-89, rojo <50, gris null. */
+function PageSpeedScore({
+  label,
+  score,
+}: {
+  label: string;
+  score: number | null;
+}) {
+  const tone =
+    score == null
+      ? "bg-slate-100 text-slate-700 dark:bg-slate-900/50 dark:text-slate-300 border-slate-200 dark:border-slate-800"
+      : score >= 90
+        ? "bg-emerald-100 text-emerald-700 dark:bg-emerald-950/50 dark:text-emerald-300 border-emerald-200 dark:border-emerald-900"
+        : score >= 50
+          ? "bg-amber-100 text-amber-700 dark:bg-amber-950/50 dark:text-amber-300 border-amber-200 dark:border-amber-900"
+          : "bg-red-100 text-red-700 dark:bg-red-950/50 dark:text-red-300 border-red-200 dark:border-red-900";
+  return (
+    <span
+      className={`inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium border whitespace-nowrap ${tone}`}
+    >
+      {label} {score == null ? "—" : Math.round(score)}
+    </span>
+  );
+}
+
+/**
+ * Fila "Velocidad (Google PageSpeed)" del drawer (contrato 5).
+ * - status "OK" → 4 scores con color por umbral + estrategia + fecha de auditoría (es-CO).
+ * - status != OK → badge con label ES del estado (nunca el error crudo del backend).
+ * - Campo ausente / JSON inválido / estado desconocido → null (no renderiza nada).
+ */
+function PageSpeedBadge({ data }: { data?: string | null }) {
+  if (!data || typeof data !== "string") return null;
+  let ps: Record<string, unknown> | null = null;
+  try {
+    const parsed: unknown = JSON.parse(data);
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+      ps = parsed as Record<string, unknown>;
+    }
+  } catch {
+    return null;
+  }
+  if (!ps) return null;
+
+  const status = typeof ps.status === "string" ? ps.status : null;
+
+  // Estado != OK → badge informativo con label ES, sin detalles internos.
+  if (status !== "OK") {
+    const meta = status ? PAGESPEED_STATUS_META[status] : undefined;
+    if (!meta) return null;
+    return (
+      <div className="space-y-1.5 pt-2 border-t">
+        <div className="font-medium text-muted-foreground">
+          Velocidad (Google PageSpeed)
+        </div>
+        <span
+          className={`inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium border whitespace-nowrap ${
+            meta.tone === "amber"
+              ? "bg-amber-100 text-amber-700 dark:bg-amber-950/50 dark:text-amber-300 border-amber-200 dark:border-amber-900"
+              : "bg-slate-100 text-slate-700 dark:bg-slate-900/50 dark:text-slate-300 border-slate-200 dark:border-slate-800"
+          }`}
+        >
+          {meta.label}
+        </span>
+      </div>
+    );
+  }
+
+  // status OK → scores por umbral + estrategia + fecha de auditoría.
+  const rawScores =
+    ps.scores && typeof ps.scores === "object" && !Array.isArray(ps.scores)
+      ? (ps.scores as Record<string, unknown>)
+      : {};
+  const strategyLabel =
+    ps.strategy === "mobile"
+      ? "móvil"
+      : ps.strategy === "desktop"
+        ? "desktop"
+        : null;
+  const auditedRaw = ps.auditedAt;
+  const auditedDate =
+    typeof auditedRaw === "string" || typeof auditedRaw === "number"
+      ? new Date(auditedRaw)
+      : null;
+  const auditedLabel =
+    auditedDate && !Number.isNaN(auditedDate.getTime())
+      ? auditedDate.toLocaleDateString("es-CO")
+      : null;
+  return (
+    <div className="space-y-1.5 pt-2 border-t">
+      <div className="font-medium text-muted-foreground">
+        Velocidad (Google PageSpeed)
+      </div>
+      <div className="flex flex-wrap gap-1">
+        <PageSpeedScore
+          label="Rendimiento"
+          score={finiteScoreOrNull(rawScores.performance)}
+        />
+        <PageSpeedScore label="SEO" score={finiteScoreOrNull(rawScores.seo)} />
+        <PageSpeedScore
+          label="Accesibilidad"
+          score={finiteScoreOrNull(rawScores.accessibility)}
+        />
+        <PageSpeedScore
+          label="Buenas prácticas"
+          score={finiteScoreOrNull(rawScores.bestPractices)}
+        />
+      </div>
+      {(strategyLabel || auditedLabel) && (
+        <div className="text-[10px] text-muted-foreground">
+          {strategyLabel && <span>Estrategia: {strategyLabel}</span>}
+          {strategyLabel && auditedLabel && <span> · </span>}
+          {auditedLabel && <span>Auditoría: {auditedLabel}</span>}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** Type guard: item de inteligencia con kind conocido y texto no vacío. */
+function isIntelligenceItem(it: unknown): it is { kind: string; text: string } {
+  if (!it || typeof it !== "object") return false;
+  const kind = (it as { kind?: unknown }).kind;
+  const text = (it as { text?: unknown }).text;
+  return (
+    typeof kind === "string" &&
+    INTELLIGENCE_KIND_META[kind] != null &&
+    typeof text === "string" &&
+    text.trim().length > 0
+  );
+}
+
+/**
+ * Bloque "Análisis inteligente" del drawer (taxonomía P2).
+ * Hasta 10 items válidos; chip de kind con color + texto pequeño al lado.
+ * Campo ausente / JSON inválido / array vacío → null (no renderiza nada).
+ */
+function IntelligenceItemsList({ data }: { data?: string | null }) {
+  if (!data || typeof data !== "string") return null;
+  let parsed: unknown = null;
+  try {
+    parsed = JSON.parse(data);
+  } catch {
+    return null;
+  }
+  if (!Array.isArray(parsed)) return null;
+  const items = parsed.filter(isIntelligenceItem).slice(0, 10);
+  if (items.length === 0) return null;
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="text-sm flex items-center gap-2">
+          <Sparkles className="h-4 w-4" /> Análisis inteligente
+        </CardTitle>
+      </CardHeader>
+      <CardContent className="text-xs space-y-1.5">
+        {items.map((it, i) => {
+          const meta = INTELLIGENCE_KIND_META[it.kind];
+          return (
+            <div key={i} className="flex items-start gap-2">
+              <span
+                className={`inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium border shrink-0 ${meta.color}`}
+              >
+                {meta.label}
+              </span>
+              <span className="text-[11px] leading-relaxed break-words">
+                {it.text}
+              </span>
+            </div>
+          );
+        })}
+      </CardContent>
+    </Card>
+  );
 }

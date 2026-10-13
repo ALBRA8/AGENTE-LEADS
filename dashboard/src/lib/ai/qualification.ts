@@ -1,8 +1,19 @@
 // ============================================================
 // src/lib/ai/qualification.ts — 5-layer qualification pipeline
+// P2: determinización de pain/tier ANTES del LLM.
+//
+// El núcleo de reglas vive en qualification-deterministic.ts
+// (puro, reproducible). El LLM SOLO aporta NARRATIVA: cualquier
+// cosa que diga sobre tier/pain/nicheFit/intentSignals se
+// ignora — esos campos SIEMPRE vienen del determinista.
 // ============================================================
 
 import { aiChat } from "./client";
+import {
+  determineQualification as determineQualificationCore,
+  type DeterministicQualification,
+  type QualificationRuleHit,
+} from "./qualification-deterministic";
 
 export type Tier = "TIER_A" | "TIER_B" | "TIER_C" | "TIER_F" | "PENDING";
 export type NicheFit = "high" | "medium" | "low" | "none";
@@ -26,7 +37,9 @@ export interface ProspectContext {
   email?: string | null;
   socialLinks?: string | null; // JSON
   description?: string | null;
-  // NEW: enrichment data from layers 6-7
+  // P2: estado del negocio según Google Business (CLOSED_PERMANENTLY descalifica).
+  businessStatus?: string | null;
+  // Enrichment data from layers 6-7
   techStack?: {
     cms?: string;
     framework?: string;
@@ -46,7 +59,9 @@ export interface ProspectContext {
     hasBookingSystem?: boolean;
     bookingSystemName?: string | null;
     daysSinceLastUpdate?: number | null;
-    freshnessScore?: number;
+    // number | null: llega por JSON.parse de la columna DB (null posible);
+    // el motor determinista lo trata con != null (P2).
+    freshnessScore?: number | null;
     comprobableEvidence?: string;
   } | null;
 }
@@ -60,71 +75,54 @@ export interface QualificationResult {
   intentSignals: string[];
   disqualifyReason?: string;
   details: string;
+  /** P2: auditoría determinista — cada regla evaluada y si disparó. */
+  basis: QualificationRuleHit[];
+  /** P2: narrativa del LLM sobre el encaje de nicho (opcional). */
+  nicheFitReason?: string;
 }
 
-const SYSTEM_PROMPT = `Eres el motor de calificación de AGENTE LEADS. Tu trabajo es analizar un prospecto y una oferta comercial, y devolver una calificación estructurada en 7 capas (las 5 originales + tech stack + freshness).
+// Alias de conveniencia: el núcleo determinista también se exporta desde aquí.
+export function determineQualification(
+  offer: OfferContext,
+  prospect: ProspectContext,
+  extra?: { businessStatus?: string | null }
+): DeterministicQualification {
+  return determineQualificationCore(offer, prospect, extra);
+}
+
+// Narrativa solicitada al LLM (única salida esperada de él):
+interface NarrativeResponse {
+  nicheFitReason?: unknown;
+  painEvidenceNarrative?: unknown;
+  details?: unknown;
+}
+
+const SYSTEM_PROMPT = `Eres el motor narrativo de calificación de AGENTE LEADS. La calificación estructural (tier, pain, nicheFit, señales) YA FUE CALCULADA por un motor determinista de reglas verificables y NO ES MODIFICABLE. Tu único rol es aportar NARRATIVA explicable para un comercial.
 
 Debes devolver ÚNICAMENTE JSON válido (sin markdown, sin texto antes o después) con esta estructura exacta:
 
 {
-  "disqualifyReason": "string | null — si aplica capa 1 (descalificación), explicación. Si no aplica, null.",
-  "nicheFit": "high | medium | low | none",
-  "nicheFitReason": "string — por qué este prospecto encaja (o no) en el nicho objetivo",
-  "painDetected": "boolean — ¿se detecta un pain point concreto y accionable?",
-  "painType": "string | null — tipo de dolor detectado: 'outdated_website' | 'no_social_media' | 'inactive_social_media' | 'no_contact_info' | 'no_online_booking' | 'low_digital_maturity' | 'specific_negative_reviews' | 'recent_expansion' | 'diy_website' | 'no_structured_data' | null",
-  "painEvidence": "string | null — evidencia pública concreta y comprobable del dolor. USA LITERALMENTE la evidencia del freshness check si está disponible.",
-  "intentSignals": ["array de strings — señales de intención detectadas: 'new_business', 'recent_expansion', 'recent_hiring', 'negative_reviews_mention_problem', 'no_digital_presence', 'static_outdated_site', 'recent_funding', 'in_growth_phase', 'diy_site', 'pro_site', 'no_booking_system', 'no_structured_data'"],
-  "tier": "TIER_A | TIER_B | TIER_C | TIER_F",
-  "details": "string — resumen de 2-3 frases que justifica la asignación de tier"
+  "nicheFitReason": "string — 1-2 frases explicando por qué este prospecto encaja (o no) con los nichos objetivo de la oferta",
+  "painEvidenceNarrative": "string | null — narrativa breve del dolor detectado, citando la evidencia comprobable proporcionada (no inventes datos). null si no hay dolor detectado",
+  "details": "string — resumen de 2-3 frases que justifica la calificación ya calculada, para un comercial"
 }
 
-REGLAS DE TIERING:
-- TIER_A: fit alto + pain detectado + al menos 1 señal de intención
-- TIER_B: fit alto + pain detectado, sin señales de intención
-- TIER_C: fit alto solo, sin pain evidente
-- TIER_F: descartado en capa 1 (sin web y sin redes sociales, franquicia, fuera de nicho, sin actividad, etc.)
+REGLAS ESTRICTAS:
+- NO propongas ni modifiques tier, painDetected, painType, nicheFit ni intentSignals: ya están decididos y serán ignorados.
+- Basa la narrativa EXCLUSIVAMENTE en los datos proporcionados (incluida la evidencia comprobable); no alucines datos que no estén.
+- Sé conservador y concreto.`;
 
-REGLAS DE PAIN DETECTION:
-- Si el prospecto NO tiene web Y NO tiene redes sociales → descartar (TIER_F, disqualifyReason: "sin presencia digital, no es accionable")
-- Si el prospecto es franquicia/cadena (mencionado en nombre o descripción) → descartar (TIER_F)
-- Si freshnessData.freshnessScore < 30 → painDetected: true, painType: "outdated_website", usar comprobableEvidence literalmente
-- Si techStack.isDiySite === true → painDetected: true, painType: "diy_website" (sito hecho en WordPress con tema gratuito, débil digital)
-- Si freshnessData.isMobileResponsive === false → painType: "low_digital_maturity"
-- Si freshnessData.hasBookingSystem === false → painType: "no_online_booking"
-- Si freshnessData.hasStructuredData === false → añade intent signal "no_structured_data"
-- Si techStack.isProSite === true → NO marcar pain de tipo "diy_website" o "outdated_website" (ya tienen infraestructura pro)
-
-REGLAS DE INTENT SIGNALS (capa 4):
-- "new_business": negocio mencionado como nuevo o con menos de 12 meses
-- "recent_expansion": mencionan expansión, nueva sede, apertura reciente
-- "recent_hiring": anuncio de búsqueda de personal
-- "negative_reviews_mention_problem": reseñas mencionan problema que la oferta resuelve
-- "no_digital_presence": ausencia total de presencia digital
-- "static_outdated_site": sitio estático y viejo
-- "recent_funding": reciente inversión o financiación
-- "in_growth_phase": signos de crecimiento activo
-- "diy_site": techStack.isDiySite === true (sitio DIY, alta propensión a comprar servicios profesionales)
-- "pro_site": techStack.isProSite === true (sitio profesional, BAJA propensión a comprar servicios básicos)
-- "no_booking_system": freshnessData.hasBookingSystem === false
-- "no_structured_data": freshnessData.hasStructuredData === false
-
-PRIORIDAD DE EVIDENCIA:
-1. Si freshnessData.comprobableEvidence está disponible, úsalo LITERALMENTE en painEvidence.
-2. Si no, usa la evidencia del techStack (cms, framework, isDiySite, isFreeTheme).
-3. Si no, infiere del resto de info.
-
-Sé realista y conservador. Solo marca painDetected=true si hay evidencia pública clara. Si no hay suficiente info para confirmar, nicheFit debe ser "medium" o "low", no inventes.`;
-
-export async function qualifyProspect(
+function buildUserMsg(
   offer: OfferContext,
-  prospect: ProspectContext
-): Promise<QualificationResult> {
-  let social: any = undefined;
-  try {
-    if (prospect.socialLinks) social = JSON.parse(prospect.socialLinks);
-  } catch {}
+  prospect: ProspectContext,
+  social: unknown,
+  det: DeterministicQualification
+): string {
+  const detLine = `CALIFICACIÓN DETERMINISTA YA CALCULADA (NO MODIFICABLE): tier=${det.tier}, pain=${
+    det.painDetected ? det.painType : "no detectado"
+  }, nicheFit=${det.nicheFit} — tu rol es solo narrativo.`;
 
-  const userMsg = `OFERTA DEL USUARIO:
+  return `OFERTA DEL USUARIO:
 - Nombre: ${offer.name}
 - Descripción: ${offer.description}
 - Precio: ${offer.priceRange || "no especificado"}
@@ -174,91 +172,107 @@ ${
     : ""
 }
 
-Analiza este prospecto contra la oferta y devuelve el JSON de calificación. Recuerda: solo JSON, sin markdown.`;
+${detLine}
 
+Devuelve solo el JSON narrativo ({nicheFitReason, painEvidenceNarrative, details}), sin markdown.`;
+}
+
+/** details determinista cuando el LLM no aporta narrativa utilizable. */
+function deterministicDetails(det: DeterministicQualification): string {
+  const hitRules = det.basis
+    .filter((b) => b.hit)
+    .map((b) => b.rule)
+    .join(", ");
+  return `Calificación determinista (IA no disponible). Reglas disparadas: ${hitRules || "ninguna"}`;
+}
+
+/**
+ * Califica un prospecto: PRIMERO el motor determinista (fuente de verdad
+ * de tier/pain/nicheFit/señales/descalificación), DESPUÉS el LLM solo para
+ * narrativa. Si el LLM falla o devuelve JSON roto, el resultado determinista
+ * sale intacto y SIEMPRE con basis.
+ */
+export async function qualifyProspect(
+  offer: OfferContext,
+  prospect: ProspectContext
+): Promise<QualificationResult> {
+  // 1) Núcleo determinista — SIEMPRE se ejecuta primero.
+  const det = determineQualificationCore(offer, prospect, {
+    businessStatus: prospect.businessStatus,
+  });
+
+  let social: unknown = undefined;
+  try {
+    if (prospect.socialLinks) social = JSON.parse(prospect.socialLinks);
+  } catch {
+    // socialLinks no-JSON se muestra tal cual en el mensaje.
+    social = prospect.socialLinks;
+  }
+
+  // 2) LLM — SOLO narrativa. Nunca decide campos estructurales.
+  let narrative: NarrativeResponse | null = null;
   try {
     const raw = await aiChat([
       { role: "system", content: SYSTEM_PROMPT },
-      { role: "user", content: userMsg },
+      { role: "user", content: buildUserMsg(offer, prospect, social, det) },
     ]);
-
     // Strip markdown code fences if any
     const cleaned = raw.replace(/```json|```/g, "").trim();
-    const parsed = JSON.parse(cleaned);
-
-    return {
-      tier: (parsed.tier || "TIER_C") as Tier,
-      nicheFit: (parsed.nicheFit || "medium") as NicheFit,
-      painDetected: Boolean(parsed.painDetected),
-      painType: parsed.painType || null,
-      painEvidence: parsed.painEvidence || null,
-      intentSignals: Array.isArray(parsed.intentSignals) ? parsed.intentSignals : [],
-      disqualifyReason: parsed.disqualifyReason || null,
-      details: parsed.details || "",
-    };
-  } catch (e: any) {
-    console.error("[qualification] AI error:", e.message);
-    // Fallback: heuristic qualification without LLM
-    return heuristicQualify(offer, prospect);
-  }
-}
-
-function heuristicQualify(
-  offer: OfferContext,
-  prospect: ProspectContext
-): QualificationResult {
-  const hasWeb = Boolean(prospect.website);
-  const hasSocial = Boolean(prospect.socialLinks && prospect.socialLinks !== "{}");
-  const hasEmail = Boolean(prospect.email);
-
-  if (!hasWeb && !hasSocial) {
-    return {
-      tier: "TIER_F",
-      nicheFit: "none",
-      painDetected: false,
-      disqualifyReason: "Sin presencia digital accionable",
-      intentSignals: [],
-      details: "Descartado: no tiene web ni redes sociales activas.",
-    };
+    narrative = JSON.parse(cleaned) as NarrativeResponse;
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : String(e);
+    console.error("[qualification] AI error (se usa resultado determinista):", msg);
+    narrative = null;
   }
 
-  const niches = (offer.targetNiches || "").toLowerCase();
-  const cat = (prospect.category || "").toLowerCase();
-  const desc = (prospect.description || "").toLowerCase();
-  const fitScore = niches.split(",").reduce((acc, n) => {
-    const t = n.trim();
-    if (t && (cat.includes(t) || desc.includes(t))) return acc + 1;
-    return acc;
-  }, 0);
+  // 3) Merge: lo estructural SIEMPRE del determinista.
+  const llmDetails =
+    typeof narrative?.details === "string" && narrative.details.trim()
+      ? narrative.details.trim()
+      : null;
+  const llmNicheFitReason =
+    typeof narrative?.nicheFitReason === "string" && narrative.nicheFitReason.trim()
+      ? narrative.nicheFitReason.trim()
+      : undefined;
+  const llmPainEvidence =
+    typeof narrative?.painEvidenceNarrative === "string" &&
+    narrative.painEvidenceNarrative.trim()
+      ? narrative.painEvidenceNarrative.trim()
+      : undefined;
 
-  let nicheFit: NicheFit = "low";
-  if (fitScore >= 2) nicheFit = "high";
-  else if (fitScore === 1) nicheFit = "medium";
+  // Prioridad de painEvidence (P2):
+  //   1. Literal comprobable de freshness SI la regla lo generó (máxima fiabilidad).
+  //   2. Narrativa del LLM (citando evidencia).
+  //   3. Evidencia derivada determinista (tech/http).
+  // Sin pain determinista NO hay painEvidence (la narrativa sola no crea pain).
+  const comprobable = prospect.freshnessData?.comprobableEvidence;
+  const comprobableWins =
+    det.painDetected &&
+    !!det.painEvidence &&
+    !!comprobable &&
+    det.painEvidence === comprobable;
+  const painEvidence = det.painDetected
+    ? comprobableWins
+      ? det.painEvidence
+      : (llmPainEvidence ?? det.painEvidence)
+    : undefined;
 
-  let pain = false;
-  let painType: string | undefined;
-  if (hasWeb && prospect.website?.startsWith("http://")) {
-    pain = true;
-    painType = "outdated_website";
-  } else if (!hasEmail) {
-    pain = true;
-    painType = "no_contact_info";
-  }
-
-  let tier: Tier = "TIER_C";
-  if (nicheFit === "high" && pain) tier = "TIER_B";
-  else if (nicheFit === "medium" && pain) tier = "TIER_C";
+  const details = llmDetails
+    ? llmNicheFitReason
+      ? `${llmDetails} | Encaje de nicho: ${llmNicheFitReason}`
+      : llmDetails
+    : deterministicDetails(det);
 
   return {
-    tier,
-    nicheFit,
-    painDetected: pain,
-    painType,
-    painEvidence: painType
-      ? `Detección heurística: ${painType}`
-      : undefined,
-    intentSignals: [],
-    disqualifyReason: undefined,
-    details: `Calificación heurística (IA no disponible). Fit: ${nicheFit}.`,
+    tier: det.tier,
+    nicheFit: det.nicheFit,
+    painDetected: det.painDetected,
+    painType: det.painType,
+    painEvidence,
+    intentSignals: det.intentSignals,
+    disqualifyReason: det.disqualifyReason,
+    details,
+    basis: det.basis,
+    nicheFitReason: llmNicheFitReason,
   };
 }
