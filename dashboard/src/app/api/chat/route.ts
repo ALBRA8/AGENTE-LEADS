@@ -151,10 +151,15 @@ async function execPipeline(args: any, userId: string): Promise<string> {
   });
 
   try {
-    const raw = await adapter.search({
+    // P1 · Contrato 7: los adapters devuelven envelope ProviderResult (nunca lanzan).
+    const envelope = await adapter.search({
       city: args.location || "", category: args.niche,
       keywords: args.query, offerDescription: offer?.description,
     });
+    if (!envelope.ok) {
+      throw new Error(`${envelope.error.provider}: ${envelope.error.code} ${envelope.error.message}`);
+    }
+    const raw = envelope.data;
 
     let tA = 0, tB = 0, tC = 0, tF = 0;
     const ids: string[] = [];

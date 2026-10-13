@@ -204,6 +204,9 @@ describe("isValidPhone / isValidEmail", () => {
 
 // ────────────────────────────────────────────────────────────
 // Integración del adapter con el SDK mockeado
+// P1 · Contrato 7: search() devuelve envelope ProviderResult
+// (nunca lanza; errores clasificados AUTH/UNAVAILABLE/RATE_LIMIT/
+// TIMEOUT/EMPTY/INVALID_INPUT/UNKNOWN + meta de llamadas).
 // ────────────────────────────────────────────────────────────
 type MockSearchResult = {
   url: string;
@@ -274,11 +277,13 @@ describe("WebSearchLeadSourceAdapter.search (sdk mockeado)", () => {
       }
     );
 
-    const prospects = await WebSearchLeadSourceAdapter.search({
+    const result = await WebSearchLeadSourceAdapter.search({
       city: "Bogotá",
       country: "Colombia",
       category: "clínica de estética",
     });
+    expect(result.ok).toBe(true);
+    const prospects = result.ok ? result.data : [];
 
     // El resultado de Facebook se descarta por skipHosts
     expect(prospects).toHaveLength(3);
@@ -322,26 +327,35 @@ describe("WebSearchLeadSourceAdapter.search (sdk mockeado)", () => {
       return { data: { html: BELLEZA_HTML_ALTERNATE } };
     });
 
-    const prospects = await WebSearchLeadSourceAdapter.search({
+    const result = await WebSearchLeadSourceAdapter.search({
       city: "Bogotá",
       country: "Colombia",
     });
+    expect(result.ok).toBe(true);
+    const prospects = result.ok ? result.data : [];
 
     expect(prospects[0].phone).toBe("+576011234567");
     expect(prospects[0].email).toBe("contacto@clinicabelleza.com");
   });
 
-  it("devuelve [] sin lanzar cuando web_search falla", async () => {
+  it("devuelve envelope !ok UNKNOWN sin lanzar cuando web_search falla", async () => {
     const errSpy = vi
       .spyOn(console, "error")
       .mockImplementation(() => {});
     invokeMock.mockRejectedValue(new Error("web_search caída"));
 
-    const prospects = await WebSearchLeadSourceAdapter.search({
+    const result = await WebSearchLeadSourceAdapter.search({
       city: "Bogotá",
     });
 
-    expect(prospects).toEqual([]);
+    // P1 · Contrato 7: el error llega en el envelope, no como excepción.
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.provider).toBe("web_search");
+      expect(result.error.code).toBe("UNKNOWN");
+      expect(result.error.message).toContain("web_search caída");
+      expect(result.error.retryable).toBe(false);
+    }
     expect(invokeMock).toHaveBeenCalledWith(
       "web_search",
       expect.objectContaining({ num: 20 })
@@ -349,18 +363,92 @@ describe("WebSearchLeadSourceAdapter.search (sdk mockeado)", () => {
     errSpy.mockRestore();
   });
 
-  it("devuelve [] cuando web_search no devuelve un array", async () => {
+  it("devuelve envelope !ok UNKNOWN cuando web_search no devuelve un array", async () => {
     const errSpy = vi
       .spyOn(console, "error")
       .mockImplementation(() => {});
     invokeMock.mockResolvedValue({ unexpected: "payload" });
 
-    const prospects = await WebSearchLeadSourceAdapter.search({
+    const result = await WebSearchLeadSourceAdapter.search({
       city: "Bogotá",
     });
 
-    expect(prospects).toEqual([]);
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.code).toBe("UNKNOWN");
+      expect(result.error.message).toContain("no es un array");
+    }
     errSpy.mockRestore();
+  });
+
+  it("clasifica errores de red del SDK como UNAVAILABLE", async () => {
+    const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    invokeMock.mockRejectedValue(
+      new TypeError("fetch failed: ENOTFOUND api.z.ai")
+    );
+
+    const result = await WebSearchLeadSourceAdapter.search({ city: "Bogotá" });
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.code).toBe("UNAVAILABLE");
+      expect(result.error.retryable).toBe(true);
+    }
+    errSpy.mockRestore();
+  });
+
+  it("clasifica el timeout (AbortError/TimeoutError) como TIMEOUT", async () => {
+    const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const timeoutErr = new Error("web_search: timeout tras 15000ms");
+    timeoutErr.name = "TimeoutError";
+    invokeMock.mockRejectedValue(timeoutErr);
+
+    const result = await WebSearchLeadSourceAdapter.search({ city: "Bogotá" });
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.code).toBe("TIMEOUT");
+      expect(result.error.retryable).toBe(true);
+    }
+    errSpy.mockRestore();
+  });
+
+  it("devuelve ok:true con data:[] cuando la búsqueda no arroja resultados (EMPTY)", async () => {
+    invokeMock.mockResolvedValue([]);
+
+    const result = await WebSearchLeadSourceAdapter.search({
+      city: "Bogotá",
+      category: "clínica de estética",
+    });
+
+    // P1 · Contrato 7: 200 con 0 resultados sigue siendo ok:true.
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.data).toEqual([]);
+      expect(result.meta.provider).toBe("web_search");
+      expect(result.meta.calls).toBe(1); // solo web_search, sin page_reader
+    }
+  });
+
+  it("adjunta meta de coste: provider estable, calls (search + page_reader) y fetchedAt ISO", async () => {
+    invokeMock.mockImplementation(async (fnName: string) => {
+      if (fnName === "web_search") return WEB_SEARCH_RESULTS;
+      return { data: { html: NO_CONTACT_HTML } };
+    });
+
+    const result = await WebSearchLeadSourceAdapter.search({
+      city: "Bogotá",
+      country: "Colombia",
+    });
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      // 1 web_search + 3 page_reader (top 3 prospectos con website)
+      expect(result.meta.calls).toBe(4);
+      expect(result.meta.durationMs).toBeGreaterThanOrEqual(0);
+      expect(() => new Date(result.meta.fetchedAt)).not.toThrow();
+      expect(result.meta.fetchedAt).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+    }
   });
 });
 

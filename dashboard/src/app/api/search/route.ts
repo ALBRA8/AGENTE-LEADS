@@ -13,7 +13,12 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireUser } from "@/lib/server";
 import { db } from "@/lib/db";
-import { getLeadSources } from "@/lib/leads";
+import { getLeadSources, searchWithFallback } from "@/lib/leads";
+import type { FallbackAttempt } from "@/lib/leads";
+import { buildDedupCandidates } from "@/lib/leads/dedup";
+import { buildDiscoveryEvidence } from "@/lib/leads/evidence-builder";
+import { classifyDigitalPresence, confirmWeb } from "@/lib/leads/digital-presence";
+import type { DigitalPresence, RawProspect } from "@/lib/leads/types";
 import { qualifyProspect } from "@/lib/ai/qualification";
 import { detectTechStack } from "@/lib/leads/tech-stack-detector";
 import { checkFreshness } from "@/lib/leads/freshness-checker";
@@ -47,8 +52,14 @@ export async function POST(req: NextRequest) {
     where: { userId: user.id },
   });
   const adapters = getLeadSources(integration || null);
-  const adapter =
-    adapters.find((a) => a.name === sourceAdapter) || adapters[0];
+  // P1: la fuente elegida por el usuario lidera la cadena; el resto queda
+  // como fallback ordenado (contrato 7 — envelope + cadena de proveedores).
+  const preferred = sourceAdapter
+    ? adapters.find((a) => a.name === sourceAdapter)
+    : undefined;
+  const chain = preferred
+    ? [preferred, ...adapters.filter((a) => a !== preferred)]
+    : adapters;
 
   // Fetch offer for qualification context
   let offer: any = null;
@@ -74,7 +85,7 @@ export async function POST(req: NextRequest) {
       category: category || null,
       keywords: keywords || null,
       radius: radius || null,
-      sourceAdapter: adapter.name,
+      sourceAdapter: preferred?.name || chain[0]?.name || "unknown",
       status: "running",
       startedAt: new Date(),
     },
@@ -109,24 +120,67 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    // ── STEP 2: Run adapter for each (expanded) query, dedup results ──
-    const allRawProspects: any[] = [];
-    const seen = new Set<string>();
+    // ── STEP 2: Cadena de fuentes con envelope + dedup multi-señal (P1) ──
+    // Cada query recorre la cadena de proveedores con envelope clasificado
+    // (contrato 7); se acumulan fuentes fallidas y metadatos de coste
+    // (contrato 6) y el dedup usa señales EXACT/STRONG/PROBABLE.
+    const allRawProspects: RawProspect[] = [];
+    const seenKeys = new Set<string>();
+    const failedProviders = new Map<
+      string,
+      { provider: string; code: string; message: string; count: number }
+    >();
+    const providerCallsDetail: Record<
+      string,
+      { provider: string; calls: number; durationMs: number; fetchedAt: string }
+    > = {};
+    let totalProviderCalls = 0;
+
+    const recordAttempts = (attempts: FallbackAttempt[]) => {
+      for (const a of attempts) {
+        // Una fuente "no configurada" no es un fallo operativo del usuario —
+        // se omite del conteo de fuentes fallidas (contrato 6).
+        if (!a.ok && !(a.code === "AUTH" && a.message === "no configurado")) {
+          const prev = failedProviders.get(a.provider);
+          if (prev) prev.count += 1;
+          else
+            failedProviders.set(a.provider, {
+              provider: a.provider,
+              code: a.code || "UNKNOWN",
+              message: a.message || "",
+              count: 1,
+            });
+        }
+      }
+    };
+
     for (const q of expanded.slice(0, 25)) {
       // For expanded queries we pass keywords=q so the adapter searches for it
       const adapterInput = shouldExpand
         ? { city, country, category, keywords: q, radius, offerDescription: offer?.description }
         : { city, country, category, keywords, radius, offerDescription: offer?.description };
-      try {
-        const results = await adapter.search(adapterInput);
-        for (const r of results) {
-          const key = `${r.name}|${r.city}`;
-          if (seen.has(key)) continue;
-          seen.add(key);
+      const outcome = await searchWithFallback(chain, adapterInput);
+      totalProviderCalls += outcome.totalCalls;
+      recordAttempts(outcome.attempts);
+      if (outcome.result.ok) {
+        const meta = outcome.result.meta;
+        if (meta) {
+          const acc = providerCallsDetail[meta.provider] ?? {
+            provider: meta.provider,
+            calls: 0,
+            durationMs: 0,
+            fetchedAt: meta.fetchedAt,
+          };
+          acc.calls += meta.calls;
+          acc.durationMs += meta.durationMs;
+          providerCallsDetail[meta.provider] = acc;
+        }
+        for (const r of outcome.result.data) {
+          const cands = buildDedupCandidates(r);
+          if (cands.some((c) => seenKeys.has(c.key))) continue; // duplicado multi-señal
+          for (const c of cands) seenKeys.add(c.key);
           allRawProspects.push(r);
         }
-      } catch (e: any) {
-        console.warn(`[search] adapter failed for query "${q}":`, e.message);
       }
       if (!shouldExpand) break; // single-query mode
     }
@@ -141,8 +195,17 @@ export async function POST(req: NextRequest) {
     const newSaved: any[] = []; // track new ones that need enrichment
 
     for (const rp of allRawProspects) {
+      // Dedup multi-señal contra DB: placeId > phone > website > name+city
       const existing = await db.prospect.findFirst({
-        where: { userId: user.id, name: rp.name, city: rp.city },
+        where: {
+          userId: user.id,
+          OR: [
+            ...(rp.placeId ? [{ placeId: rp.placeId }] : []),
+            ...(rp.phone ? [{ phone: rp.phone }] : []),
+            ...(rp.website ? [{ website: rp.website }] : []),
+            { name: rp.name, city: rp.city ?? city },
+          ],
+        },
       });
       if (existing) {
         savedProspectIds.push(existing.id);
@@ -170,12 +233,37 @@ export async function POST(req: NextRequest) {
           description: rp.description || null,
           source: rp.source,
           sourceUrl: rp.sourceUrl || null,
+          // ── P1: Places enriquecido + marcado DEMO + presencia digital ──
+          placeId: rp.placeId || null,
+          lat: rp.lat ?? null,
+          lng: rp.lng ?? null,
+          rating: rp.rating ?? null,
+          ratingCount: rp.ratingCount ?? null,
+          businessStatus: rp.businessStatus || null,
+          isMock: rp.isMock === true,
+          digitalPresence: classifyDigitalPresence(rp),
           status: "NEW",
           tier: "PENDING",
         },
       });
       savedProspectIds.push(created.id);
       newSaved.push(created);
+
+      // ── P1 · Contrato 2: evidencia por campo persistida ──
+      const drafts = buildDiscoveryEvidence(rp);
+      if (drafts.length > 0) {
+        await db.evidence.createMany({
+          data: drafts.map((d) => ({
+            prospectId: created.id,
+            field: d.field,
+            value: d.value ?? null,
+            status: d.status,
+            source: d.source,
+            sourceUrl: d.sourceUrl ?? null,
+            confidence: d.confidence,
+          })),
+        });
+      }
     }
 
     await db.searchJob.update({
@@ -206,6 +294,11 @@ export async function POST(req: NextRequest) {
               data: {
                 techStack: JSON.stringify(tech),
                 freshnessData: JSON.stringify(fresh),
+                // P1 · Contrato 3: la web declarada queda verificada tras fetch real
+                digitalPresence: confirmWeb(
+                  (p.digitalPresence as DigitalPresence | null) ??
+                    "WEB_PENDIENTE_DE_VERIFICAR"
+                ),
               },
             });
           } catch (e: any) {
@@ -365,17 +458,30 @@ export async function POST(req: NextRequest) {
       }
     }
 
+    // ── P1 · Contrato 6: estado real del SearchJob + trazabilidad de fuentes/coste ──
+    const failedList = Array.from(failedProviders.values());
+    const hadFailures = failedList.length > 0;
+    const found = savedProspectIds.length;
+    const finalStatus =
+      found > 0 ? (hadFailures ? "partial" : "completed") : hadFailures ? "failed" : "completed";
+
     await db.searchJob.update({
       where: { id: job.id },
       data: {
-        status: "completed",
-        foundCount: savedProspectIds.length,
-        qualifiedCount: savedProspectIds.length,
+        status: finalStatus,
+        foundCount: found,
+        qualifiedCount: found,
         tierACount: tierA,
         tierBCount: tierB,
         tierCCount: tierC,
         tierFCount: tierF,
         completedAt: new Date(),
+        partialSources: failedList.length,
+        failedSources: failedList.length ? JSON.stringify(failedList) : null,
+        providerCalls: totalProviderCalls,
+        providerCallsDetail: Object.keys(providerCallsDetail).length
+          ? JSON.stringify(Object.values(providerCallsDetail))
+          : null,
       },
     });
 
@@ -383,11 +489,15 @@ export async function POST(req: NextRequest) {
       jobId: job.id,
       expansionId,
       expandedQueries: shouldExpand ? expanded.length : 1,
-      found: savedProspectIds.length,
+      found,
       tierA,
       tierB,
       tierC,
       tierF,
+      status: finalStatus,
+      partialSources: failedList.length,
+      failedSources: failedList,
+      providerCalls: totalProviderCalls,
     });
   } catch (e: any) {
     await db.searchJob.update({

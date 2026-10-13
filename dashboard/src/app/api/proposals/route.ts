@@ -43,6 +43,18 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "prospect not found" }, { status: 404 });
   }
 
+  // Contrato 10: bloqueo de outreach/propuestas sobre datos DEMO/MOCK.
+  // Los prospectos de demostración nunca generan materiales de contacto.
+  if (prospect.isMock) {
+    return NextResponse.json(
+      {
+        error:
+          "Este prospecto es de demostración (DEMO): el contacto y las propuestas están bloqueados. Ejecuta una búsqueda con una fuente real para generar propuestas.",
+      },
+      { status: 403 }
+    );
+  }
+
   let offer: any = null;
   if (offerId) {
     offer = await db.offer.findFirst({

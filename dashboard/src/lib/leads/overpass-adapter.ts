@@ -6,6 +6,15 @@
 // ============================================================
 
 import type { LeadSourceAdapter, RawProspect, SearchInput } from "./types";
+import type { ProviderError, ProviderErrorCode, ProviderResult } from "./envelope";
+import { classifyHttpError, providerFail, providerMeta, providerOk } from "./envelope";
+
+// P1 · Contrato 7: nombre de proveedor ESTABLE para el envelope/meta
+// (adapter.name se conserva como etiqueta legible para la UI).
+const PROVIDER = "overpass";
+
+// P1: los fetch no tenían timeout → 15s por llamada (contrato 7).
+const DEFAULT_TIMEOUT_MS = 15_000;
 
 const OVERPASS_ENDPOINTS = [
   "https://overpass-api.de/api/interpreter",
@@ -36,35 +45,125 @@ interface OverpassResponse {
   elements?: OverpassElement[];
 }
 
+/**
+ * fetch con AbortController (15s). Al vencer el plazo el fetch rechaza
+ * con el motivo del abort (Error "timeout tras …ms"), que el clasificador
+ * traduce a TIMEOUT. Nunca lanza por decisión propia: solo propaga el
+ * error del fetch para que el llamador lo clasifique.
+ */
+async function fetchWithTimeout(
+  url: string,
+  init: RequestInit = {},
+  timeoutMs: number = DEFAULT_TIMEOUT_MS
+): Promise<Response> {
+  const ctrl = new AbortController();
+  const timer = setTimeout(
+    () => ctrl.abort(new Error(`timeout tras ${timeoutMs}ms`)),
+    timeoutMs
+  );
+  if (typeof timer.unref === "function") timer.unref();
+  try {
+    return await fetch(url, { ...init, signal: ctrl.signal });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
+ * Clasifica un error de red/abort en la taxonomía del contrato 7:
+ * abort/timeout → TIMEOUT · TypeError/ENOTFOUND/ECONNREFUSED → UNAVAILABLE
+ * · cualquier otro → UNKNOWN.
+ */
+function classifyNetworkError(e: unknown): {
+  code: ProviderErrorCode;
+  message: string;
+} {
+  if (e instanceof Error) {
+    const msg = e.message || e.name || String(e);
+    if (
+      e.name === "AbortError" ||
+      e.name === "TimeoutError" ||
+      /timeout|timed out/i.test(msg)
+    ) {
+      return { code: "TIMEOUT", message: msg };
+    }
+    if (
+      e instanceof TypeError ||
+      /ENOTFOUND|ECONNREFUSED|ECONNRESET|EAI_AGAIN|fetch failed|network/i.test(
+        msg
+      )
+    ) {
+      return { code: "UNAVAILABLE", message: msg };
+    }
+    return { code: "UNKNOWN", message: msg };
+  }
+  return { code: "UNKNOWN", message: String(e) };
+}
+
+/**
+ * Resultado de la geocodificación Nominatim, clasificado para el envelope:
+ * - ok      → bounding box lista
+ * - empty   → Nominatim respondió 200 sin resultados (ciudad desconocida)
+ * - error   → fallo HTTP/red/timeout, con ProviderError ya clasificado
+ */
+type GeocodeOutcome =
+  | { status: "ok"; bb: BoundingBox; calls: 1 }
+  | { status: "empty"; calls: 1 }
+  | { status: "error"; error: ProviderError; calls: 1 };
+
 async function geocodeCity(
   city: string,
   country?: string
-): Promise<BoundingBox | null> {
+): Promise<GeocodeOutcome> {
   const q = [city, country].filter(Boolean).join(", ");
   const url = `${NOMINATIM_ENDPOINT}?q=${encodeURIComponent(
     q
   )}&format=json&limit=1&accept-language=es`;
   try {
-    const r = await fetch(url, {
+    const r = await fetchWithTimeout(url, {
       headers: {
         "User-Agent": "AGENTE-LEADS/1.0 (B2B prospecting; contact: dev)",
       },
     });
-    if (!r.ok) return null;
+    if (!r.ok) {
+      const body = await r.text().catch(() => undefined);
+      console.error(
+        `[Overpass] geocode failed: HTTP ${r.status}`
+      );
+      return {
+        status: "error",
+        error: classifyHttpError(PROVIDER, r.status, body),
+        calls: 1,
+      };
+    }
     const data = await r.json();
-    if (!Array.isArray(data) || data.length === 0) return null;
+    if (!Array.isArray(data) || data.length === 0) return { status: "empty", calls: 1 };
     const bb = data[0].boundingbox;
-    if (!bb) return null;
+    if (!bb) return { status: "empty", calls: 1 };
     // Nominatim returns boundingbox as [south, north, west, east] as strings
     return {
-      south: parseFloat(bb[0]),
-      north: parseFloat(bb[1]),
-      west: parseFloat(bb[2]),
-      east: parseFloat(bb[3]),
+      status: "ok",
+      calls: 1,
+      bb: {
+        south: parseFloat(bb[0]),
+        north: parseFloat(bb[1]),
+        west: parseFloat(bb[2]),
+        east: parseFloat(bb[3]),
+      },
     };
   } catch (e) {
-    console.error("[Overpass] geocode failed:", e);
-    return null;
+    const classified = classifyNetworkError(e);
+    console.error("[Overpass] geocode failed:", classified.message);
+    return {
+      status: "error",
+      error: {
+        provider: PROVIDER,
+        code: classified.code,
+        message: `geocodificación Nominatim: ${classified.message}`,
+        retryable: classified.code === "TIMEOUT" || classified.code === "UNAVAILABLE",
+      },
+      calls: 1,
+    };
   }
 }
 
@@ -207,45 +306,79 @@ export const OverpassLeadSourceAdapter: LeadSourceAdapter = {
     return true;
   },
 
-  async search(input: SearchInput): Promise<RawProspect[]> {
+  async search(input: SearchInput): Promise<ProviderResult<RawProspect[]>> {
+    const startedAt = Date.now();
+    let calls = 0; // geocode + intentos Overpass (incluye failover)
     const country = input.country || "";
+
     // Step 1: geocode the city to get bounding box
-    const bb = await geocodeCity(input.city, country);
-    if (!bb) {
-      console.warn("[Overpass] could not geocode city:", input.city);
-      return [];
+    const geo = await geocodeCity(input.city, country);
+    calls += geo.calls;
+    if (geo.status === "error") {
+      // P1 · Contrato 7: fallo HTTP/red/timeout del geocoder → envelope de error.
+      return providerFail(PROVIDER, geo.error.code, geo.error.message, {
+        httpStatus: geo.error.httpStatus,
+        meta: providerMeta(PROVIDER, calls, Date.now() - startedAt),
+      });
     }
+    if (geo.status === "empty") {
+      // P1 · Contrato 7: 200 sin resultados → ok con data:[] (EMPTY).
+      return providerOk([], providerMeta(PROVIDER, calls, Date.now() - startedAt));
+    }
+    const bb = geo.bb;
 
     // Step 2: build Overpass query
     const query = buildOverpassQuery(bb, input.category, input.keywords);
 
     // Step 3: query Overpass (try multiple endpoints in case one is down)
     let data: OverpassResponse | null = null;
+    let lastError: ProviderError | null = null;
     for (const endpoint of OVERPASS_ENDPOINTS) {
       try {
-        const r = await fetch(endpoint, {
+        calls++;
+        const r = await fetchWithTimeout(endpoint, {
           method: "POST",
           headers: { "Content-Type": "text/plain" },
           body: `data=${encodeURIComponent(query)}`,
         });
         if (!r.ok) {
+          const body = await r.text().catch(() => undefined);
           console.warn(`[Overpass] ${endpoint} returned ${r.status}`);
+          lastError = classifyHttpError(PROVIDER, r.status, body);
           continue;
         }
         data = await r.json();
         break;
       } catch (e) {
-        console.warn(`[Overpass] ${endpoint} failed:`, (e as Error).message);
+        const classified = classifyNetworkError(e);
+        console.warn(`[Overpass] ${endpoint} failed:`, classified.message);
+        lastError = {
+          provider: PROVIDER,
+          code: classified.code,
+          message: classified.message,
+          retryable: classified.code === "TIMEOUT" || classified.code === "UNAVAILABLE",
+        };
         continue;
       }
     }
 
-    if (!data || !data.elements) {
+    if (!data) {
+      // P1 · Contrato 7: todos los endpoints fallaron → envelope de error
+      // con el último fallo clasificado (antes se devolvía [] silencioso).
+      const err: ProviderError = lastError ?? {
+        provider: PROVIDER,
+        code: "UNAVAILABLE",
+        message: "todos los endpoints de Overpass fallaron",
+        retryable: true,
+      };
       console.warn("[Overpass] all endpoints failed or returned empty");
-      return [];
+      return providerFail(PROVIDER, err.code, err.message, {
+        httpStatus: err.httpStatus,
+        meta: providerMeta(PROVIDER, calls, Date.now() - startedAt),
+      });
     }
 
-    // Step 4: extract prospects
+    // Step 4: extract prospects (200 válido, sin elementos → data:[])
     const elements = data?.elements ?? [];
     const prospects: RawProspect[] = [];
     const seen = new Set<string>();
@@ -258,6 +391,10 @@ export const OverpassLeadSourceAdapter: LeadSourceAdapter = {
     }
 
     // Rate-limit Nominatim be nice (1 req per search)
-    return prospects;
+    // P1 · Contrato 7: éxito con meta de coste (geocode + llamadas Overpass).
+    return providerOk(
+      prospects,
+      providerMeta(PROVIDER, calls, Date.now() - startedAt)
+    );
   },
 };

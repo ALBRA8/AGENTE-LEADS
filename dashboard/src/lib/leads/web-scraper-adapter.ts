@@ -6,7 +6,13 @@
 // ============================================================
 
 import type { LeadSourceAdapter, RawProspect, SearchInput } from "./types";
+import type { ProviderResult } from "./envelope";
+import { classifyHttpError, providerFail, providerMeta, providerOk } from "./envelope";
 import { assertPublicUrl, ssrfSafeFetch } from "@/lib/security/ssrf";
+
+// P1 · Contrato 7: nombre de proveedor ESTABLE para el envelope/meta
+// (adapter.name se conserva como etiqueta legible para la UI).
+const PROVIDER = "web_scraper";
 
 const USER_AGENTS = [
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
@@ -29,7 +35,9 @@ export const WebScraperLeadSourceAdapter: LeadSourceAdapter = {
   async isConfigured() {
     return true;
   },
-  async search(input: SearchInput): Promise<RawProspect[]> {
+  async search(input: SearchInput): Promise<ProviderResult<RawProspect[]>> {
+    const startedAt = Date.now();
+    const meta = () => providerMeta(PROVIDER, 1, Date.now() - startedAt);
     // Build Google search query
     const q = [
       input.category || "clínica estética",
@@ -49,6 +57,8 @@ export const WebScraperLeadSourceAdapter: LeadSourceAdapter = {
       // before fetching and re-validates every redirect hop. The target
       // here is a fixed google.com URL, but the guard is applied
       // uniformly to any server-side fetch.
+      // P1 · Contrato 7: se respeta el timeout existente de ssrfSafeFetch
+      // (8s por hop, AbortSignal) — no se añade otro.
       const res = await ssrfSafeFetch(googleUrl, {
         headers: {
           "User-Agent": randomUA(),
@@ -57,7 +67,14 @@ export const WebScraperLeadSourceAdapter: LeadSourceAdapter = {
         },
       });
       if (!res.ok) {
-        throw new Error(`Google returned ${res.status}`);
+        // P1 · Contrato 7: error HTTP clasificado (no excepción).
+        const body = await res.text().catch(() => undefined);
+        const err = classifyHttpError(PROVIDER, res.status, body);
+        console.error("[WebScraperAdapter]", err.message);
+        return providerFail(PROVIDER, err.code, err.message, {
+          httpStatus: err.httpStatus,
+          meta: meta(),
+        });
       }
       const html = await res.text();
 
@@ -105,10 +122,33 @@ export const WebScraperLeadSourceAdapter: LeadSourceAdapter = {
       }
       // Rate limit: pause between searches
       await sleep(1500);
-      return prospects;
-    } catch (e: any) {
-      console.error("[WebScraperAdapter]", e.message);
-      return [];
+      // P1 · Contrato 7: éxito (200 sin resultados parseables → data:[])
+      return providerOk(prospects, meta());
+    } catch (e: unknown) {
+      // P1 · Contrato 7: NUNCA lanzar — todo error se clasifica en el envelope.
+      // ssrfSafeFetch ya acota cada hop a 8s (abort → TIMEOUT); errores de red
+      // (TypeError/ENOTFOUND/ECONNREFUSED) → UNAVAILABLE; resto → UNKNOWN.
+      let code: "TIMEOUT" | "UNAVAILABLE" | "UNKNOWN" = "UNKNOWN";
+      let message = String(e);
+      if (e instanceof Error) {
+        message = e.message || e.name;
+        if (
+          e.name === "AbortError" ||
+          e.name === "TimeoutError" ||
+          /timeout|timed out/i.test(message)
+        ) {
+          code = "TIMEOUT";
+        } else if (
+          e instanceof TypeError ||
+          /ENOTFOUND|ECONNREFUSED|ECONNRESET|EAI_AGAIN|fetch failed|network/i.test(
+            message
+          )
+        ) {
+          code = "UNAVAILABLE";
+        }
+      }
+      console.error("[WebScraperAdapter]", message);
+      return providerFail(PROVIDER, code, message, { meta: meta() });
     }
   },
 };

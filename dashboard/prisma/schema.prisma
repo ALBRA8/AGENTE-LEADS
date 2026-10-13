@@ -86,6 +86,10 @@ model SearchJob {
   tierCCount      Int      @default(0)
   tierFCount      Int      @default(0)
   errorMessage    String?
+  partialSources    Int     @default(0)  // nº de fuentes/queries fallidas
+  failedSources     String? // JSON [{provider, code, message}]
+  providerCalls     Int     @default(0)  // total de llamadas HTTP de proveedores
+  providerCallsDetail String? // JSON [{provider, calls, durationMs, fetchedAt}]
   startedAt       DateTime?
   completedAt     DateTime?
   createdAt       DateTime @default(now())
@@ -118,6 +122,17 @@ model Prospect {
   // ── Source traceability
   source          String   // "mock" | "google_places" | "web_scraper" | "manual"
   sourceUrl       String?
+
+  // ── P1: Places enriquecido + marcado DEMO ──
+  placeId        String?   // Google Places place_id
+  lat            Float?
+  lng            Float?
+  rating         Float?
+  ratingCount    Int?
+  businessStatus String?   // OPERATIONAL | CLOSED_TEMPORARILY | CLOSED_PERMANENTLY
+  isMock         Boolean   @default(false)  // contrato 10: marcado estructural DEMO
+  digitalPresence String?  // contrato 3: WEB_PROPIA_CONFIRMADA | SOLO_RED_SOCIAL_O_DIRECTORIO | SIN_WEB_CONFIRMADA | WEB_PENDIENTE_DE_VERIFICAR
+  evidencias     Evidence[]
 
   // ── 5-layer qualification
   tier            String   @default("PENDING") // "TIER_A" | "TIER_B" | "TIER_C" | "TIER_F" | "PENDING"
@@ -261,4 +276,20 @@ model McpSession {
   scopes      String   // JSON array: ["read:prospects", "write:outcomes", ...]
   lastUsedAt  DateTime?
   createdAt   DateTime @default(now())
+}
+
+// ── P1 · Contrato 2: evidencia por campo (espejo EvidenceRecord del bot raíz) ──
+model Evidence {
+  id          String   @id @default(cuid())
+  prospectId  String
+  prospect    Prospect @relation(fields: [prospectId], references: [id], onDelete: Cascade)
+  field       String   // website | phone | email | address | rating | placeId | ...
+  value       String?
+  status      String   // FOUND | NOT_FOUND | CONFIRMED_ABSENT | INFERRED
+  source      String   // google_places | web_search | overpass | web_scraper | mock | manual | freshness_check | tech_detection
+  sourceUrl   String?
+  confidence  Float?
+  retrievedAt DateTime @default(now())
+
+  @@index([prospectId, field])
 }

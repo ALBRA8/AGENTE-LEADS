@@ -9,7 +9,77 @@
 // ============================================================
 
 import type { LeadSourceAdapter, RawProspect, SearchInput } from "./types";
+import type { ProviderErrorCode, ProviderResult } from "./envelope";
+import { providerFail, providerMeta, providerOk } from "./envelope";
 import { getAIClient } from "@/lib/ai/client";
+
+// P1 · Contrato 7: nombre de proveedor ESTABLE para el envelope/meta
+// (adapter.name se conserva como etiqueta legible para la UI).
+const PROVIDER = "web_search";
+
+// P1: el adapter no tenía timeout → 15s por llamada al SDK (contrato 7).
+const DEFAULT_TIMEOUT_MS = 15_000;
+
+/**
+ * Corre `p` contra un temporizador: si `p` no se resuelve en `ms`, la
+ * promesa resultante rechaza con un Error nombrado "TimeoutError".
+ * El SDK (getAIClient) no expone AbortSignal, así que la carrera con el
+ * temporizador es la única forma de acotar la latencia de web_search/
+ * page_reader (la llamada subyacente puede seguir en curso, pero el
+ * adapter deja de esperarla y clasifica el resultado como TIMEOUT).
+ */
+function withTimeout<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      const err = new Error(`${label}: timeout tras ${ms}ms`);
+      err.name = "TimeoutError";
+      reject(err);
+    }, ms);
+    if (typeof timer.unref === "function") timer.unref();
+    p.then(
+      (v) => {
+        clearTimeout(timer);
+        resolve(v);
+      },
+      (e) => {
+        clearTimeout(timer);
+        reject(e);
+      }
+    );
+  });
+}
+
+/**
+ * Clasifica un error desconocido en la taxonomía del contrato 7.
+ * - AbortError/TimeoutError/"timeout" en el mensaje → TIMEOUT
+ * - TypeError de fetch / ENOTFOUND / ECONNREFUSED…  → UNAVAILABLE
+ * - cualquier otro                                  → UNKNOWN
+ */
+export function classifySdkError(e: unknown): {
+  code: ProviderErrorCode;
+  message: string;
+} {
+  if (e instanceof Error) {
+    const msg = e.message || e.name || String(e);
+    if (
+      e.name === "AbortError" ||
+      e.name === "TimeoutError" ||
+      /timeout|timed out/i.test(msg)
+    ) {
+      return { code: "TIMEOUT", message: msg };
+    }
+    if (
+      e instanceof TypeError ||
+      /ENOTFOUND|ECONNREFUSED|ECONNRESET|EAI_AGAIN|fetch failed|network/i.test(
+        msg
+      )
+    ) {
+      return { code: "UNAVAILABLE", message: msg };
+    }
+    return { code: "UNKNOWN", message: msg };
+  }
+  return { code: "UNKNOWN", message: String(e) };
+}
 
 interface WebSearchResult {
   url: string;
@@ -162,7 +232,9 @@ export const WebSearchLeadSourceAdapter: LeadSourceAdapter = {
     return true;
   },
 
-  async search(input: SearchInput): Promise<RawProspect[]> {
+  async search(input: SearchInput): Promise<ProviderResult<RawProspect[]>> {
+    const startedAt = Date.now();
+    let calls = 0; // nº de llamadas al SDK (web_search + page_reader)
     // Build a focused search query
     const parts = [
       input.category || "negocios",
@@ -175,13 +247,27 @@ export const WebSearchLeadSourceAdapter: LeadSourceAdapter = {
 
     try {
       const client = await getAIClient();
-      // Run web search
-      const searchResults = (await client.functions.invoke("web_search", {
-        query,
-        num: 20,
-      })) as unknown as WebSearchResult[];
+      // Run web search (P1: acotada a 15s — antes podía colgar indefinidamente)
+      calls++;
+      const searchResults = (await withTimeout(
+        client.functions.invoke("web_search", {
+          query,
+          num: 20,
+        }),
+        DEFAULT_TIMEOUT_MS,
+        "web_search"
+      )) as unknown as WebSearchResult[];
 
-      if (!Array.isArray(searchResults)) return [];
+      // P1 · Contrato 7: payload malformado del proveedor es un FALLO
+      // (no "0 resultados": ese caso es un array vacío válido).
+      if (!Array.isArray(searchResults)) {
+        return providerFail(
+          PROVIDER,
+          "UNKNOWN",
+          "web_search devolvió una respuesta que no es un array",
+          { meta: providerMeta(PROVIDER, calls, Date.now() - startedAt) }
+        );
+      }
 
       // Convert search results to RawProspect[]
       const prospects: RawProspect[] = [];
@@ -245,9 +331,16 @@ export const WebSearchLeadSourceAdapter: LeadSourceAdapter = {
         if (!p.website) continue;
         try {
           const client = await getAIClient();
-          const pageResult = (await client.functions.invoke("page_reader", {
-            url: p.website,
-          })) as any;
+          // P1: cada page_reader también se acota a 15s; el enriquecimiento
+          // sigue siendo best-effort (timeout/error → se omite esa página).
+          calls++;
+          const pageResult = (await withTimeout(
+            client.functions.invoke("page_reader", {
+              url: p.website,
+            }),
+            DEFAULT_TIMEOUT_MS,
+            "page_reader"
+          )) as any;
 
           const html = pageResult?.data?.html || "";
           // Extract email and phone from page HTML (strict).
@@ -287,10 +380,18 @@ export const WebSearchLeadSourceAdapter: LeadSourceAdapter = {
         }
       }
 
-      return prospects;
+      // P1 · Contrato 7: éxito (incluye 0 resultados → ok con data:[])
+      return providerOk(
+        prospects,
+        providerMeta(PROVIDER, calls, Date.now() - startedAt)
+      );
     } catch (e) {
-      console.error("[WebSearchAdapter] error:", e);
-      return [];
+      // P1 · Contrato 7: NUNCA lanzar — todo error se clasifica en el envelope.
+      const classified = classifySdkError(e);
+      console.error("[WebSearchAdapter] error:", classified.message);
+      return providerFail(PROVIDER, classified.code, classified.message, {
+        meta: providerMeta(PROVIDER, calls, Date.now() - startedAt),
+      });
     }
   },
 };

@@ -9,6 +9,8 @@
 // This pins: the generated OverpassQL for city+category inputs, the
 // no-match fallback tags, endpoint failover, and the element→prospect
 // parsing (name/phone/website/social/address, dedup by name).
+// P1 · Contrato 7: se fija además el envelope ProviderResult —
+// ok/data/meta en éxito, ok:false + error{code} en fallo (nunca lanza).
 // ============================================================
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { OverpassLeadSourceAdapter } from "../overpass-adapter";
@@ -162,7 +164,15 @@ describe("OverpassLeadSourceAdapter", () => {
     );
 
     // Parsing still happened on the Overpass payload (dedup + drop unnamed)
-    expect(result).toHaveLength(2);
+    expect(result.ok).toBe(true);
+    const prospects = result.ok ? result.data : [];
+    expect(prospects).toHaveLength(2);
+    // P1 · Contrato 7: meta de coste — 1 geocode + 1 overpass
+    if (result.ok) {
+      expect(result.meta.provider).toBe("overpass");
+      expect(result.meta.calls).toBe(2);
+      expect(result.meta.durationMs).toBeGreaterThanOrEqual(0);
+    }
   });
 
   it("falls back to clinic tags when category/keywords match no trigger", async () => {
@@ -196,16 +206,18 @@ describe("OverpassLeadSourceAdapter", () => {
     });
     vi.stubGlobal("fetch", fetchMock);
 
-    const result: RawProspect[] = await OverpassLeadSourceAdapter.search({
+    const result = await OverpassLeadSourceAdapter.search({
       city: "Santiago",
       country: "CL",
       category: "clínica",
     });
+    expect(result.ok).toBe(true);
+    const prospects: RawProspect[] = result.ok ? result.data : [];
 
     // 4 elements → 1 deduped (same name) + 1 dropped (no name) = 2 prospects
-    expect(result).toHaveLength(2);
+    expect(prospects).toHaveLength(2);
 
-    expect(result[0]).toMatchObject({
+    expect(prospects[0]).toMatchObject({
       name: "Clínica Alemana",
       category: "Clinic", // amenity tag, capitalized
       city: "Santiago",
@@ -215,9 +227,9 @@ describe("OverpassLeadSourceAdapter", () => {
       source: "openstreetmap",
       socialLinks: { instagram: "@clinica.alemana" },
     });
-    expect(result[0].sourceUrl).toContain("#map=18/-34.6/-58.4");
+    expect(prospects[0].sourceUrl).toContain("#map=18/-34.6/-58.4");
 
-    expect(result[1]).toMatchObject({
+    expect(prospects[1]).toMatchObject({
       name: "Centro Médico Sur",
       category: "Negocio", // no category tags → fallback label
       address: "Av. Providencia 742",
@@ -225,10 +237,10 @@ describe("OverpassLeadSourceAdapter", () => {
       phone: undefined,
       source: "openstreetmap",
     });
-    expect(result[1].sourceUrl).toContain("#map=18/-34.63/-58.43");
+    expect(prospects[1].sourceUrl).toContain("#map=18/-34.63/-58.43");
   });
 
-  it("returns [] when the city cannot be geocoded (no Overpass call)", async () => {
+  it("returns envelope !ok UNAVAILABLE when the city cannot be geocoded (HTTP 500, no Overpass call)", async () => {
     const fetchMock = stubFetch({
       geocode: () => okJson("nominatim error", 500),
     });
@@ -239,11 +251,39 @@ describe("OverpassLeadSourceAdapter", () => {
       category: "clínica",
     });
 
-    expect(result).toEqual([]);
+    // P1 · Contrato 7: fallo HTTP del geocoder → envelope clasificado
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.provider).toBe("overpass");
+      expect(result.error.code).toBe("UNAVAILABLE");
+      expect(result.error.httpStatus).toBe(500);
+      expect(result.error.retryable).toBe(true);
+      expect(result.meta?.calls).toBe(1); // solo el intento de geocode
+    }
     expect(fetchMock).toHaveBeenCalledTimes(1); // only the geocode attempt
   });
 
-  it("returns [] after trying all Overpass endpoints when they all fail", async () => {
+  it("returns envelope ok:true data:[] when Nominatim answers 200 with no results (EMPTY)", async () => {
+    const fetchMock = stubFetch({
+      geocode: () => okJson([]),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await OverpassLeadSourceAdapter.search({
+      city: "Nowhereville",
+      category: "clínica",
+    });
+
+    // P1 · Contrato 7: 200 sin resultados → ok:true con data:[]
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.data).toEqual([]);
+      expect(result.meta.calls).toBe(1);
+    }
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("returns envelope !ok UNAVAILABLE after trying all Overpass endpoints when they all fail", async () => {
     const fetchMock = stubFetch({
       geocode: () => okJson([{ boundingbox: NOMINATIM_BOUNDINGBOX }]),
       overpass: () => {
@@ -257,7 +297,65 @@ describe("OverpassLeadSourceAdapter", () => {
       category: "clínica",
     });
 
-    expect(result).toEqual([]);
+    // P1 · Contrato 7: antes devolvía [] silencioso; ahora el fallo es visible
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.code).toBe("UNAVAILABLE");
+      expect(result.error.message).toContain("ECONNREFUSED");
+      expect(result.meta?.calls).toBe(4); // 1 geocode + 3 endpoints
+    }
     expect(fetchMock).toHaveBeenCalledTimes(4); // 1 geocode + 3 endpoints
+  });
+
+  it("classifies abort/timeout as TIMEOUT after exhausting all endpoints", async () => {
+    const fetchMock = stubFetch({
+      geocode: () => okJson([{ boundingbox: NOMINATIM_BOUNDINGBOX }]),
+      overpass: () => {
+        const e = new Error("timeout tras 15000ms");
+        e.name = "AbortError";
+        throw e;
+      },
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await OverpassLeadSourceAdapter.search({
+      city: "Santiago",
+      category: "clínica",
+    });
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.code).toBe("TIMEOUT");
+      expect(result.error.retryable).toBe(true);
+    }
+  });
+
+  it("fails over to the next endpoint when the first returns 5xx and counts every attempt", async () => {
+    const fetchMock = stubFetch({
+      geocode: () => okJson([{ boundingbox: NOMINATIM_BOUNDINGBOX }]),
+      overpass: (() => {
+        let n = 0;
+        return () => {
+          n++;
+          if (n === 1) return okJson("overpass saturado", 503);
+          return okJson(OVERPASS_PAYLOAD);
+        };
+      })(),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await OverpassLeadSourceAdapter.search({
+      city: "Santiago",
+      category: "clínica",
+    });
+
+    // P1 · Contrato 7: el failover interno se conserva — el 2º endpoint responde
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.data).toHaveLength(2);
+      // 1 geocode + 2 intentos overpass (1º falló con 503)
+      expect(result.meta.calls).toBe(3);
+    }
+    expect(fetchMock).toHaveBeenCalledTimes(3);
   });
 });

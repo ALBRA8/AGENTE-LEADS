@@ -87,6 +87,54 @@ const STATUS_META: Record<string, string> = {
   CLIENT: "Cliente",
 };
 
+// ============================================================
+// P1 — Presencia digital (contrato 3) y estado del negocio.
+// Map LOCAL: no importar de src/lib/leads/ (módulo en construcción).
+// Campos defensivos: pueden no llegar en la respuesta de la API.
+// ============================================================
+const DIGITAL_PRESENCE_META: Record<
+  string,
+  { label: string; color: string; bg: string }
+> = {
+  WEB_PROPIA_CONFIRMADA: {
+    label: "Web propia confirmada",
+    color: "text-emerald-700 dark:text-emerald-300",
+    bg: "bg-emerald-100 dark:bg-emerald-950/50 border-emerald-200 dark:border-emerald-900",
+  },
+  WEB_PENDIENTE_DE_VERIFICAR: {
+    label: "Web por verificar",
+    color: "text-amber-700 dark:text-amber-300",
+    bg: "bg-amber-100 dark:bg-amber-950/50 border-amber-200 dark:border-amber-900",
+  },
+  SOLO_RED_SOCIAL_O_DIRECTORIO: {
+    label: "Solo red social o directorio",
+    color: "text-blue-700 dark:text-blue-300",
+    bg: "bg-blue-100 dark:bg-blue-950/50 border-blue-200 dark:border-blue-900",
+  },
+  SIN_WEB_CONFIRMADA: {
+    label: "Sin web confirmada",
+    color: "text-slate-700 dark:text-slate-300",
+    bg: "bg-slate-100 dark:bg-slate-900/50 border-slate-200 dark:border-slate-800",
+  },
+};
+
+// businessStatus: solo estados != OPERATIONAL muestran badge (ruido cero).
+const BUSINESS_STATUS_META: Record<
+  string,
+  { label: string; color: string; bg: string }
+> = {
+  CLOSED_TEMPORARILY: {
+    label: "Cerrado temporalmente",
+    color: "text-amber-700 dark:text-amber-300",
+    bg: "bg-amber-100 dark:bg-amber-950/50 border-amber-200 dark:border-amber-900",
+  },
+  CLOSED_PERMANENTLY: {
+    label: "Cerrado permanentemente",
+    color: "text-red-700 dark:text-red-300",
+    bg: "bg-red-100 dark:bg-red-950/50 border-red-200 dark:border-red-900",
+  },
+};
+
 export function CrmClient() {
   const qc = useQueryClient();
   const [page, setPage] = useState(1);
@@ -339,8 +387,12 @@ export function CrmClient() {
                           </button>
                         </td>
                         <td className="p-3">
-                          <div className="font-medium">{p.name}</div>
+                          <div className="font-medium flex items-center gap-1.5 flex-wrap">
+                            {p.name}
+                            {p.isMock === true && <DemoBadge />}
+                          </div>
                           <div className="text-[11px] text-muted-foreground flex items-center gap-2 flex-wrap mt-0.5">
+                            <RatingLabel rating={p.rating} ratingCount={p.ratingCount} />
                             {p.phone && (
                               <span className="flex items-center gap-0.5">
                                 <Phone className="h-3 w-3" /> {p.phone}
@@ -356,6 +408,8 @@ export function CrmClient() {
                                 <Mail className="h-3 w-3" /> email
                               </span>
                             )}
+                            <DigitalPresenceBadge value={p.digitalPresence ?? null} />
+                            <BusinessStatusBadge value={p.businessStatus ?? null} />
                           </div>
                         </td>
                         <td className="p-3 hidden md:table-cell text-muted-foreground text-xs">
@@ -645,6 +699,9 @@ function ProspectDetailDrawer({
                   {STATUS_META[p.status] || p.status}
                 </Badge>
                 <Badge variant="outline">{p.source}</Badge>
+                {p.isMock === true && <DemoBadge />}
+                <DigitalPresenceBadge value={p?.digitalPresence ?? null} />
+                <BusinessStatusBadge value={p?.businessStatus ?? null} />
               </div>
 
               {/* Qualification details */}
@@ -752,6 +809,27 @@ function ProspectDetailDrawer({
                       )
                     }
                   />
+                  {p.rating != null && (
+                    <Row
+                      label="Valoración"
+                      value={<RatingLabel rating={p.rating} ratingCount={p.ratingCount} />}
+                    />
+                  )}
+                  {(p.placeId || p.lat != null || p.lng != null) && (
+                    <div className="pt-2">
+                      <div className="text-muted-foreground">Ubicación (Google Places):</div>
+                      <div className="mt-1 space-y-1">
+                        {p.placeId && (
+                          <div className="font-mono text-[11px] break-all">{p.placeId}</div>
+                        )}
+                        {p.lat != null && p.lng != null && (
+                          <div className="text-[11px]">
+                            {p.lat}, {p.lng}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  )}
                   {p.socialLinks &&
                     (() => {
                       try {
@@ -1175,6 +1253,70 @@ function TechStackBadge({ data }: { data?: string | null }) {
   } catch {
     return <span className="text-[11px] text-muted-foreground">—</span>;
   }
+}
+
+// ============================================================
+// P1 — Badges de presencia digital / DEMO (defensivos).
+// Solo renderizan si el backend ya envía los nuevos campos.
+// ============================================================
+
+/** Badge "DEMO" (contrato 10): señal visual de datos de demostración. */
+function DemoBadge() {
+  return (
+    <span
+      title="Datos de demostración (no reales)"
+      className="inline-flex items-center px-1.5 py-0.5 rounded border border-amber-400 dark:border-amber-700 bg-amber-50 dark:bg-amber-950/40 text-amber-800 dark:text-amber-300 text-[10px] font-semibold uppercase tracking-wider whitespace-nowrap"
+    >
+      DEMO
+    </span>
+  );
+}
+
+/** Badge de presencia digital (contrato 3). Valor desconocido → sin badge. */
+function DigitalPresenceBadge({ value }: { value?: string | null }) {
+  if (!value) return null;
+  const meta = DIGITAL_PRESENCE_META[value];
+  if (!meta) return null;
+  return (
+    <span
+      className={`inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium border whitespace-nowrap ${meta.bg} ${meta.color}`}
+    >
+      {meta.label}
+    </span>
+  );
+}
+
+/** Badge de estado del negocio: solo estados != OPERATIONAL (ruido cero). */
+function BusinessStatusBadge({ value }: { value?: string | null }) {
+  if (!value || value === "OPERATIONAL") return null;
+  const meta = BUSINESS_STATUS_META[value];
+  if (!meta) return null;
+  return (
+    <span
+      className={`inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium border whitespace-nowrap ${meta.bg} ${meta.color}`}
+    >
+      {meta.label}
+    </span>
+  );
+}
+
+/** Rating "★ 4.5 (23)" — visible solo si rating es numérico. */
+function RatingLabel({
+  rating,
+  ratingCount,
+}: {
+  rating?: number | null;
+  ratingCount?: number | null;
+}) {
+  if (typeof rating !== "number" || !Number.isFinite(rating)) return null;
+  return (
+    <span className="flex items-center gap-0.5 text-amber-600 dark:text-amber-400 whitespace-nowrap">
+      ★ {rating.toFixed(1)}
+      {typeof ratingCount === "number" && ratingCount > 0
+        ? ` (${ratingCount})`
+        : ""}
+    </span>
+  );
 }
 
 function FreshnessBadge({ data }: { data?: string | null }) {
