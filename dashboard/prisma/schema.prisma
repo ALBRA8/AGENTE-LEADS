@@ -134,6 +134,7 @@ model Prospect {
   freshnessData  String?  // JSON: {lastModified, copyrightYear, sslAgeDays, isResponsive, hasStructuredData, hasBookingSystem, daysSinceLastUpdate}
   lookAlikeScore  Float?   // 0-100, similarity to user's best customers
   leadScore       Int?     // P1.1: Lead Score 0-100 (transparent, deterministic)
+  leadScoreBreakdown String? // P0-B: JSON ScoreBreakdown[] — desglose auditable del leadScore (field/points/reason por componente)
   intelligenceSummary String? // P1.2: LLM-generated summary (INFERRED, not observed fact)
   intelligenceOpportunity String? // small | medium | large | unknown
   intelligenceAngle String?    // suggested outreach angle

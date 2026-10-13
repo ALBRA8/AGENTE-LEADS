@@ -22,6 +22,20 @@ interface BoundingBox {
   east: number;
 }
 
+// Minimal shape of the Overpass API response elements we consume.
+interface OverpassElement {
+  type: string;
+  id?: number;
+  lat?: number;
+  lon?: number;
+  center?: { lat: number; lon: number };
+  tags?: Record<string, string>;
+}
+
+interface OverpassResponse {
+  elements?: OverpassElement[];
+}
+
 async function geocodeCity(
   city: string,
   country?: string
@@ -59,8 +73,11 @@ function buildOverpassQuery(
   category?: string,
   keywords?: string
 ): string {
-  // Map common service categories to OSM tags
-  const tagMap: Record<string, string[]> = [
+  // Map common service categories to OSM tags.
+  // Ordered list of [trigger, osmTagFilters] entries: the first trigger contained
+  // in the (category + keywords) string wins, so order matters (Record/Object
+  // would lose the documented iteration contract).
+  const tagMap: Array<[string, string[]]> = [
     ["clínica", ['["amenity"="clinic"]', '["healthcare"="clinic"]', '["healthcare"="doctor"]']],
     ["clinic", ['["amenity"="clinic"]', '["healthcare"="clinic"]']],
     ["estética", ['["amenity"="clinic"]', '["healthcare"="clinic"]', '["beauty"="yes"]']],
@@ -108,7 +125,11 @@ function buildOverpassQuery(
   return `[out:json][timeout:25];(${filters}); out center tags 50;`;
 }
 
-function extractProspect(el: any, city: string, country: string): RawProspect | null {
+function extractProspect(
+  el: OverpassElement,
+  city: string,
+  country: string
+): RawProspect | null {
   const tags = el.tags || {};
   const name = tags.name || tags["name:es"] || tags.brand;
   if (!name) return null;
@@ -132,7 +153,7 @@ function extractProspect(el: any, city: string, country: string): RawProspect | 
     tags.leisure ||
     "negocio";
 
-  const social: any = {};
+  const social: NonNullable<RawProspect["socialLinks"]> = {};
   if (tags["contact:instagram"] || tags.instagram)
     social.instagram = tags["contact:instagram"] || tags.instagram;
   if (tags["contact:facebook"] || tags.facebook)
@@ -199,7 +220,7 @@ export const OverpassLeadSourceAdapter: LeadSourceAdapter = {
     const query = buildOverpassQuery(bb, input.category, input.keywords);
 
     // Step 3: query Overpass (try multiple endpoints in case one is down)
-    let data: any = null;
+    let data: OverpassResponse | null = null;
     for (const endpoint of OVERPASS_ENDPOINTS) {
       try {
         const r = await fetch(endpoint, {
@@ -225,7 +246,7 @@ export const OverpassLeadSourceAdapter: LeadSourceAdapter = {
     }
 
     // Step 4: extract prospects
-    const elements = data.elements as any[];
+    const elements = data?.elements ?? [];
     const prospects: RawProspect[] = [];
     const seen = new Set<string>();
     for (const el of elements) {

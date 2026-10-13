@@ -20,6 +20,7 @@
 // ============================================================
 
 import { getAIClient } from "@/lib/ai/client";
+import { assertPublicUrl, resolvePublicHost, SsrfError } from "@/lib/security/ssrf";
 
 export interface TechStackResult {
   cms?:
@@ -68,6 +69,13 @@ export interface TechStackResult {
   isDiySite?: boolean;
   isProSite?: boolean;
   rawSignatures: string[];
+  // ── P0-E (SSRF) — optional, additive; existing consumers unaffected ──
+  /** true = the URL was rejected by SSRF policy (user-editable website
+   *  pointing at localhost/private/metadata). Says NOTHING about the
+   *  site itself and must not be treated as a detection result. */
+  ssrfBlocked?: boolean;
+  /** Detailed SSRF rejection reason when ssrfBlocked === true. */
+  ssrfReason?: string;
   detectedAt: string;
 }
 
@@ -344,6 +352,47 @@ export async function detectTechStack(
   let url = website.trim();
   if (!/^https?:\/\//i.test(url)) {
     url = `https://${url}`;
+  }
+
+  // ──────────────────────────────────────────────────────────
+  // P0-E SSRF GATE — `website` is user-editable (PATCH), so it must
+  // never point at localhost / private ranges / cloud metadata.
+  // Scheme + IP literal (ALL encodings: 2130706433, 0x7f000001,
+  // 0177.0.0.1, ::ffff:127.0.0.1 …) + DNS (every resolved IP must be
+  // public, fail-closed). Runs BEFORE any external call (page_reader).
+  // ──────────────────────────────────────────────────────────
+  try {
+    const parsed = assertPublicUrl(url);
+    await resolvePublicHost(parsed.hostname);
+  } catch (e) {
+    if (e instanceof SsrfError) {
+      // Domain that doesn't resolve or unparseable URL = normal
+      // failure, keep the legacy "empty result" contract...
+      if (
+        e.code === "SSRF_DNS_LOOKUP_FAILED" ||
+        e.code === "SSRF_INVALID_URL"
+      ) {
+        console.warn(
+          "[tech-stack-detector] url not resolvable:",
+          (e as Error).message
+        );
+        return { detectedAt, rawSignatures: [] };
+      }
+      // ...but a POLICY block is explicit and flagged, never silent.
+      console.warn("[tech-stack-detector] SSRF blocked:", (e as Error).message);
+      return {
+        detectedAt,
+        rawSignatures: [],
+        ssrfBlocked: true,
+        ssrfReason: (e as Error).message,
+      };
+    }
+    // Unexpected validation error → legacy never-throw contract.
+    console.warn(
+      "[tech-stack-detector] ssrf validation error:",
+      (e as Error).message
+    );
+    return { detectedAt, rawSignatures: [] };
   }
 
   // --- Fetch HTML via page_reader (hard 5s timeout) ---

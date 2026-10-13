@@ -21,6 +21,12 @@
 
 import * as tls from "tls";
 import { getAIClient } from "@/lib/ai/client";
+import {
+  assertPublicUrl,
+  resolvePublicHost,
+  ssrfSafeFetch,
+  SsrfError,
+} from "@/lib/security/ssrf";
 
 // ------------------------------------------------------------
 // Public types
@@ -41,6 +47,13 @@ export interface FreshnessResult {
   freshnessScore: number; // 0-100 (100 = fresh, 0 = very stale)
   comprobableEvidence: string; // human-readable, in Spanish
   detectedAt: string; // ISO date
+  // ── P0-E (SSRF) — optional, additive; existing consumers unaffected ──
+  /** "BLOCKED" = the URL was rejected by SSRF policy. This is NOT a
+   *  signal that the site is stale — qualification must not treat it
+   *  as a website pain. Absent/undefined on legacy paths = normal. */
+  checkStatus?: "OK" | "BLOCKED";
+  /** Detailed SSRF rejection reason when checkStatus === "BLOCKED". */
+  statusReason?: string;
 }
 
 // ------------------------------------------------------------
@@ -63,6 +76,23 @@ function makeEmpty(evidence = "No se pudo verificar"): FreshnessResult {
     freshnessScore: 0,
     comprobableEvidence: evidence,
     detectedAt: new Date().toISOString(),
+  };
+}
+
+/**
+ * P0-E: result for URLs rejected by SSRF policy (user-editable website
+ * pointing at localhost / private ranges / cloud metadata). Deliberately
+ * DIFFERENT from makeEmpty(): carries checkStatus="BLOCKED" + statusReason
+ * so consumers can tell "security block" apart from "site down / stale".
+ * freshnessScore stays 0, but the evidence text explicitly states the
+ * block does NOT imply an outdated site.
+ */
+function makeBlocked(reason: string): FreshnessResult {
+  return {
+    ...makeEmpty(),
+    checkStatus: "BLOCKED",
+    statusReason: reason,
+    comprobableEvidence: `Verificación de sitio web bloqueada por política de seguridad (URL no pública): ${reason}. Esto NO indica que el sitio esté desactualizado.`,
   };
 }
 
@@ -250,8 +280,19 @@ function detectBookingSystem(html: string): {
  * Try a TLS handshake to fetch the SSL cert's valid_from date.
  * Native fetch can't expose cert info, so we use tls.connect directly.
  * Returns null if the sandbox blocks it or the cert lacks valid_from.
+ *
+ * P0-E (SSRF): when `pinnedIp` is provided we connect to the
+ * DNS-VALIDATED IP instead of letting tls.connect resolve the hostname
+ * again (anti-rebinding). SNI (servername) stays the ORIGINAL hostname
+ * so the handshake presents the right certificate. If the pinned IP
+ * is stale/unreachable the promise resolves null (same as any
+ * handshake failure) — no behavioral risk.
  */
-function probeSslAge(hostname: string): Promise<{ validFrom: Date } | null> {
+function probeSslAge(
+  hostname: string,
+  pinnedIp?: string | null,
+  port = 443
+): Promise<{ validFrom: Date } | null> {
   return new Promise((resolve) => {
     let settled = false;
     const finish = (val: { validFrom: Date } | null) => {
@@ -267,8 +308,8 @@ function probeSslAge(hostname: string): Promise<{ validFrom: Date } | null> {
 
     const socket = tls.connect(
       {
-        host: hostname,
-        port: 443,
+        host: pinnedIp || hostname,
+        port,
         servername: hostname,
         rejectUnauthorized: false, // we just want to read the cert, not validate
       },
@@ -420,23 +461,65 @@ export async function checkFreshness(
 
     const isHttps = url.protocol === "https:";
 
+    // ────────────────────────────────────────────────────────
+    // P0-E SSRF GATE — the website is user-editable (PATCH), so it
+    // must never point at localhost / private ranges / cloud
+    // metadata. Validates scheme + IP literal (ALL encodings:
+    // 2130706433, 0x7f000001, 0177.0.0.1, ::ffff:127.0.0.1 …) and
+    // DNS (EVERY resolved IP must be public, fail-closed on mixed).
+    // Runs BEFORE any of the three probes below (HEAD, TLS,
+    // page_reader). DNS results are cached 60s by the ssrf module.
+    // ────────────────────────────────────────────────────────
+    let validatedIps: string[] | null = null;
+    try {
+      assertPublicUrl(url);
+      validatedIps = await resolvePublicHost(url.hostname);
+    } catch (e) {
+      if (e instanceof SsrfError) {
+        // Domain that doesn't resolve = normal network failure, not a
+        // security block → keep the legacy makeEmpty() semantics.
+        if (e.code === "SSRF_DNS_LOOKUP_FAILED") {
+          return makeEmpty(`No se pudo resolver el dominio (${e.message})`);
+        }
+        if (e.code === "SSRF_INVALID_URL") {
+          return makeEmpty("URL inválida");
+        }
+        return { ...makeBlocked(e.message), isHttps };
+      }
+      // Unreachable in practice (both validators only throw SsrfError).
+      // Fail-safe: checkFreshness must never reject.
+      console.warn(
+        "[freshness-checker] ssrf validation error:",
+        (e as Error).message
+      );
+      return makeEmpty();
+    }
+
     // ----------------------------------------------------------
     // 1. HTTP Last-Modified header — try native HEAD fetch.
     //    May be blocked by the sandbox — gracefully skip on failure.
     // ----------------------------------------------------------
     let lastModifiedHeader: string | null = null;
+    const headCtrl = new AbortController();
+    const headTimer = setTimeout(() => headCtrl.abort(), 5000);
     try {
-      const ctrl = new AbortController();
-      const t = setTimeout(() => ctrl.abort(), 5000);
-      const r = await fetch(url.toString(), {
-        method: "HEAD",
-        signal: ctrl.signal,
-        redirect: "follow",
-      });
-      clearTimeout(t);
+      // P0-E: ssrfSafeFetch replaces the raw fetch — manual redirects,
+      // each Location re-validated (scheme + IP literal + DNS) before
+      // the next hop. A redirect to a private host throws
+      // SsrfBlockedError (a hostile redirect ⇒ stop enriching).
+      const r = await ssrfSafeFetch(
+        url.toString(),
+        { method: "HEAD", signal: headCtrl.signal },
+        { maxRedirects: 3, timeoutMs: 5000 }
+      );
       lastModifiedHeader = r.headers.get("last-modified");
-    } catch {
-      // sandbox likely blocked the request — fall through
+    } catch (e) {
+      if (e instanceof SsrfError) {
+        return { ...makeBlocked((e as Error).message), isHttps };
+      }
+      // sandbox/network failure — fall through (legacy behavior)
+    } finally {
+      clearTimeout(headTimer);
     }
 
     let lastModifiedDate: Date | null = null;
@@ -452,7 +535,15 @@ export async function checkFreshness(
     let sslAgeDays: number | null = null;
     if (isHttps) {
       try {
-        const cert = await probeSslAge(url.hostname);
+        // P0-E: pin the TLS handshake to the DNS-validated IP
+        // (anti-rebinding). SNI remains the original hostname.
+        const pinnedIp =
+          validatedIps && validatedIps.length > 0 ? validatedIps[0] : null;
+        const cert = await probeSslAge(
+          url.hostname,
+          pinnedIp,
+          Number(url.port) || 443
+        );
         if (cert) {
           sslAgeDays = Math.floor(
             (Date.now() - cert.validFrom.getTime()) / 86_400_000
@@ -471,6 +562,11 @@ export async function checkFreshness(
     let publishedTime: string | undefined;
     try {
       const client = await getAIClient();
+      // P0-E: re-assert before handing the URL to page_reader. The full
+      // gate (incl. DNS) already ran at the top and passed — this sync
+      // re-check documents and guarantees the invariant right at the
+      // call site, even though page_reader routes via z.ai's proxy.
+      assertPublicUrl(url);
       // Wrap in Promise.race so a hung page_reader can't blow the 8s budget.
       const readerPromise = client.functions.invoke("page_reader", {
         url: website,
@@ -587,6 +683,7 @@ export async function checkFreshness(
       freshnessScore,
       comprobableEvidence,
       detectedAt,
+      checkStatus: "OK",
     };
   })();
 

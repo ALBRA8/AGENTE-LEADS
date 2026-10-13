@@ -23,8 +23,11 @@ interface WebSearchResult {
  * Extract a plausible phone number from text.
  * Filters out: numeric IDs (>15 digits), CSS artifacts, version strings.
  * Prefers numbers that look like international or local phone formats.
+ * Returns the FULL matched value (e.g. "+57 601 123 4567"), never a
+ * single character — callers must persist this value as-is or via
+ * normalizePhone(), never via match[0].
  */
-function extractPhone(text?: string): string | undefined {
+export function extractPhone(text?: string): string | undefined {
   if (!text) return undefined;
   // Match candidate phone numbers: optional +, then 7-15 digits with separators
   const candidates = text.match(/\+?\d[\d\s().-]{6,}\d/g);
@@ -48,12 +51,77 @@ function extractPhone(text?: string): string | undefined {
   return undefined;
 }
 
+// ============================================================
+// Normalization & validation helpers (exported for testing).
+// P0-C: the adapter used to persist `match[0]` (first char: "+" for
+// phones, "c" for emails). These helpers keep contact data clean and
+// give the enrichment pass a validity gate so corrupted values are
+// refilled instead of trusted.
+// ============================================================
+
+/**
+ * Normalize a phone string to E.164-ish form:
+ * - trim
+ * - keep the leading "+" only when it starts the value
+ * - strip every non-digit character (spaces, dashes, dots, parens)
+ * e.g. "+57 601 123 4567" -> "+576011234567"
+ * Returns undefined when no digits remain (e.g. "+", "").
+ */
+export function normalizePhone(raw?: string | null): string | undefined {
+  if (!raw) return undefined;
+  const trimmed = raw.trim();
+  const plus = trimmed.startsWith("+");
+  const digits = trimmed.replace(/\D/g, "");
+  if (!digits) return undefined;
+  return plus ? `+${digits}` : digits;
+}
+
+/**
+ * A phone is valid when, normalized, it has 7-15 digits (E.164 range).
+ * Explicitly rejects the corrupted 1-char values ("+") persisted by the
+ * pre-P0-C version of this adapter.
+ */
+export function isValidPhone(raw?: string | null): boolean {
+  const norm = normalizePhone(raw);
+  if (!norm) return false;
+  const digits = norm.replace(/\D/g, "");
+  return digits.length >= 7 && digits.length <= 15;
+}
+
+/**
+ * Normalize an email: trim + lowercase.
+ * Returns undefined when nothing remains after trim.
+ */
+export function normalizeEmail(raw?: string | null): string | undefined {
+  if (!raw) return undefined;
+  const trimmed = raw.trim().toLowerCase();
+  return trimmed || undefined;
+}
+
+/**
+ * An email is valid when normalized it is local@domain with a dotted
+ * domain and exactly one "@". Explicitly rejects the corrupted 1-char
+ * values ("c") persisted by the pre-P0-C version of this adapter.
+ */
+export function isValidEmail(raw?: string | null): boolean {
+  const norm = normalizeEmail(raw);
+  if (!norm) return false;
+  const parts = norm.split("@");
+  if (parts.length !== 2) return false;
+  const [local, domain] = parts;
+  if (!local || !domain) return false;
+  return domain.includes(".");
+}
+
 /**
  * Extract a plausible email from text.
  * Filters out: emails ending in image/css/js extensions, emails that
  * start with common asset prefixes (bg-, icon-, logo-).
+ * Returns the FULL matched value (e.g. "contacto@clinica.com.co"),
+ * never a single character — callers must persist this value as-is or
+ * via normalizeEmail(), never via match[0].
  */
-function extractEmail(text?: string): string | undefined {
+export function extractEmail(text?: string): string | undefined {
   if (!text) return undefined;
   const candidates = text.match(
     /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/g
@@ -157,8 +225,11 @@ export const WebSearchLeadSourceAdapter: LeadSourceAdapter = {
           city: input.city,
           country: input.country,
           website: r.url,
-          phone: phoneMatch?.[0],
-          email: emailMatch?.[0],
+          // P0-C: extractPhone/extractEmail already return the FULL value —
+          // never index it with [0] (that persisted "+" / "c"). Normalize +
+          // validate before persisting.
+          phone: isValidPhone(phoneMatch) ? normalizePhone(phoneMatch) : undefined,
+          email: isValidEmail(emailMatch) ? normalizeEmail(emailMatch) : undefined,
           socialLinks: undefined,
           description: r.snippet || undefined,
           source: "web_search_zai",
@@ -179,14 +250,17 @@ export const WebSearchLeadSourceAdapter: LeadSourceAdapter = {
           })) as any;
 
           const html = pageResult?.data?.html || "";
-          // Extract email and phone from page HTML (strict)
-          if (!p.email) {
-            const m = extractEmail(html);
-            if (m) p.email = m;
+          // Extract email and phone from page HTML (strict).
+          // P0-C: fill when the existing value is EMPTY *or INVALID*
+          // (phone with <7 digits, email without "@") so corrupted rows
+          // are repaired instead of kept.
+          if (!isValidEmail(p.email)) {
+            const filled = normalizeEmail(extractEmail(html));
+            if (filled && isValidEmail(filled)) p.email = filled;
           }
-          if (!p.phone) {
-            const m = extractPhone(html);
-            if (m) p.phone = m;
+          if (!isValidPhone(p.phone)) {
+            const filled = normalizePhone(extractPhone(html));
+            if (filled && isValidPhone(filled)) p.phone = filled;
           }
           // Extract social links
           if (!p.socialLinks) {

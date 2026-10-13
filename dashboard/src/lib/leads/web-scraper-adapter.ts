@@ -6,6 +6,7 @@
 // ============================================================
 
 import type { LeadSourceAdapter, RawProspect, SearchInput } from "./types";
+import { assertPublicUrl, ssrfSafeFetch } from "@/lib/security/ssrf";
 
 const USER_AGENTS = [
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
@@ -44,7 +45,11 @@ export const WebScraperLeadSourceAdapter: LeadSourceAdapter = {
     )}&num=20&hl=es&gl=co`;
 
     try {
-      const res = await fetch(googleUrl, {
+      // P0-E (SSRF): ssrfSafeFetch validates scheme + IP literal + DNS
+      // before fetching and re-validates every redirect hop. The target
+      // here is a fixed google.com URL, but the guard is applied
+      // uniformly to any server-side fetch.
+      const res = await ssrfSafeFetch(googleUrl, {
         headers: {
           "User-Agent": randomUA(),
           "Accept-Language": "es-CO,es;q=0.9,en;q=0.8",
@@ -69,6 +74,17 @@ export const WebScraperLeadSourceAdapter: LeadSourceAdapter = {
           !url.includes("google.") &&
           !url.includes("youtube.")
         ) {
+          // P0-E (SSRF): drop results whose URL is not public (private
+          // IP literals, localhost, credentials, non-http schemes…).
+          // This prevents poisoned result URLs from entering the
+          // prospect pipeline (they would be fetched later by the
+          // enrichment layer, which also re-validates — defense in
+          // depth). Blocked results are skipped, never thrown.
+          try {
+            assertPublicUrl(url);
+          } catch {
+            continue;
+          }
           // Build a minimal prospect from URL — real implementation would fetch the page
           const domain = new URL(url).hostname.replace("www.", "");
           prospects.push({

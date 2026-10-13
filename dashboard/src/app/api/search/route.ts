@@ -309,7 +309,19 @@ export async function POST(req: NextRequest) {
             },
           });
 
-          // ── P1.1: Lead Score (0-100, transparent, deterministic) ──────
+          // ── P1.1: Lead Score (0-100, transparente, determinista) ──────
+          // Evidencia REAL construida desde el prospect persistido:
+          // solo los campos realmente presentes → {field, status:"FOUND",
+          // source:"search"}. Los ausentes se OMITEN (nunca status inventado).
+          const searchEvidence: { field: string; status: string; source: string }[] = [];
+          if (r.p.website) searchEvidence.push({ field: "website", status: "FOUND", source: "search" });
+          if (r.p.phone) searchEvidence.push({ field: "phone", status: "FOUND", source: "search" });
+          if (r.p.email) searchEvidence.push({ field: "email", status: "FOUND", source: "search" });
+
+          // research_state honesto: este pipeline corre discovery + research
+          // (tech stack + freshness), pero NO existe capa de validación →
+          // nunca "VALIDATED" hardcodeado. techStack/freshnessData llegan
+          // como JSON string de la DB — scoreLead los parsea.
           const scoreResult = scoreLead({
             tier: r.q.tier,
             nicheFit: r.q.nicheFit,
@@ -317,11 +329,8 @@ export async function POST(req: NextRequest) {
             painType: r.q.painType,
             techStack: r.p.techStack,
             freshnessData: r.p.freshnessData,
-            city: r.p.city,
-            category: r.p.category,
-            validation: {}, // populated when validation layer runs
-            research_state: "VALIDATED",
-            evidence: [],
+            research_state: "RESEARCHED",
+            evidence: searchEvidence,
           });
 
           // ── P1.2: LLM Intelligence (GLM 5.3 Flash) ───────────────────
@@ -337,6 +346,11 @@ export async function POST(req: NextRequest) {
             where: { id: r.p.id },
             data: {
               leadScore: scoreResult.score,
+              // P0-B: desglose auditable del score (field/points/reason por
+              // componente), persistido junto al score. Se persiste aquí y no
+              // en el create porque el breakdown solo existe tras la
+              // calificación (el create ocurre antes del pipeline de scoring).
+              leadScoreBreakdown: JSON.stringify(scoreResult.breakdown),
               intelligenceSummary: intel?.summary ?? null,
               intelligenceOpportunity: intel?.opportunity_size ?? null,
               intelligenceAngle: intel?.outreach_angle ?? null,

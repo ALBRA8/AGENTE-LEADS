@@ -182,11 +182,34 @@ async function execPipeline(args: any, userId: string): Promise<string> {
             { name: offer.name, description: offer.description, targetNiches: offer.targetNiches },
             { name: p.name, category: p.category, city: p.city, website: p.website, phone: p.phone, email: p.email, description: p.description },
           );
-          const sc = scoreLead({ tier: q.tier, nicheFit: q.nicheFit, painDetected: q.painDetected, painType: q.painType, research_state: "VALIDATED" });
+          // P0-B: evidencia REAL (solo campos de contacto presentes en el
+          // prospect persistido; ausentes → omitidos, nunca status inventado).
+          const chatEvidence: { field: string; status: string; source: string }[] = [];
+          if (p.website) chatEvidence.push({ field: "website", status: "FOUND", source: "chat" });
+          if (p.phone) chatEvidence.push({ field: "phone", status: "FOUND", source: "chat" });
+          if (p.email) chatEvidence.push({ field: "email", status: "FOUND", source: "chat" });
+
+          // research_state honesto: este pipeline del chat SOLO descubre
+          // (adapter) y califica (LLM); NO corre tech/freshness ni validación
+          // → "DISCOVERED" (nunca "VALIDATED" hardcodeado). Si el prospecto
+          // ya traía techStack/freshnessData de una búsqueda previa del
+          // dashboard, esos componentes puntúan con su señal real.
+          const sc = scoreLead({
+            tier: q.tier,
+            nicheFit: q.nicheFit,
+            painDetected: q.painDetected,
+            painType: q.painType,
+            techStack: p.techStack ?? null,
+            freshnessData: p.freshnessData ?? null,
+            research_state: "DISCOVERED",
+            evidence: chatEvidence,
+          });
           await db.prospect.update({ where: { id: p.id }, data: {
             tier: q.tier, nicheFit: q.nicheFit, painDetected: q.painDetected,
             painType: q.painType, painEvidence: q.painEvidence,
-            leadScore: sc.score, qualificationDetails: q.details,
+            leadScore: sc.score,
+            leadScoreBreakdown: JSON.stringify(sc.breakdown),
+            qualificationDetails: q.details,
           }});
           if (q.tier === "TIER_A") tA++; else if (q.tier === "TIER_B") tB++; else if (q.tier === "TIER_C") tC++; else if (q.tier === "TIER_F") tF++;
         } catch (e: any) { console.error("[chat] qual failed:", e.message); }
