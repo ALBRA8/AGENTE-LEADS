@@ -20,15 +20,12 @@ export const runLeadPipelineTool: Tool = {
       name: "run_lead_pipeline",
       description:
         "Ejecuta el pipeline completo de prospección de leads de forma determinística: " +
-        "DESCUBRIR → INVESTIGAR → VALIDAR → RECOPILAR EVIDENCIA → DEDUPLICAR → SCORING → INTELIGENCIA (LLM) → ALMACENAR → REPORTAR. " +
+        "DESCUBRIR → INVESTIGAR → VALIDAR → RECOPILAR EVIDENCIA → DEDUPLICAR → GUARDAR → REPORTAR. " +
         "Úsalo cuando el usuario quiera encontrar leads (negocios, perfiles, contactos). " +
         "Devuelve un reporte TOP LEADS con los mejores candidatos, indicando para cada campo " +
         "si el dato fue observado, validado, inferido o no encontrado. " +
-        "Cada lead recibe un Lead Score 0-100 (P1.1). " +
-        "Si se pasa offer_description, el LLM GLM 5.3 Flash razona sobre cada lead y produce " +
-        "summary, opportunity_size, outreach_angle y confidence (P1.2). " +
-        "Los proveedores externos (Apify, Overpass, DuckDuckGo, Scrapling, email verifier) " +
-        "se usan si están configurados; si no, se usa MockDiscovery como fallback.",
+        "Los proveedores externos (Apify, Scrapling, email verifier) se usan si están configurados; " +
+        "si no, se usa el MockDiscovery provider para que el pipeline siga funcionando.",
       parameters: {
         type: "object",
         properties: {
@@ -55,18 +52,6 @@ export const runLeadPipelineTool: Tool = {
           top_n: {
             type: "number",
             description: "Número máximo de leads a incluir en el reporte top (default 10)"
-          },
-          max_concurrency: {
-            type: "number",
-            description: "Máximo paralelismo para research+validation+dedup (default 3). Reducir a 1-2 si hay rate limits."
-          },
-          offer_description: {
-            type: "string",
-            description: "Descripción de la oferta del vendedor. Si se pasa, activa la capa de Inteligencia LLM (P1.2) que produce summary, opportunity_size y outreach_angle por cada lead."
-          },
-          enable_intelligence: {
-            type: "boolean",
-            description: "Si true (default cuando hay offer_description), ejecuta la capa de Inteligencia LLM. Pasar false para saltarla y ahorrar tokens."
           }
         },
         required: ["query"]
@@ -82,9 +67,6 @@ export const runLeadPipelineTool: Tool = {
       platform: args.platform ? String(args.platform) : undefined,
       min_followers: typeof args.min_followers === "number" ? args.min_followers : undefined,
       top_n: typeof args.top_n === "number" ? args.top_n : 10,
-      max_concurrency: typeof args.max_concurrency === "number" ? args.max_concurrency : undefined,
-      offer_description: args.offer_description ? String(args.offer_description) : undefined,
-      enable_intelligence: typeof args.enable_intelligence === "boolean" ? args.enable_intelligence : undefined,
     };
 
     // Build providers — uses real Apify/Scrapling/RapidEmail if configured

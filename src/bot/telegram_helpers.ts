@@ -63,7 +63,7 @@ export function escapeMarkdownV2(text: string): string {
  * Format a Lead as a short Telegram-friendly one-liner.
  */
 export function formatLeadSummary(lead: Lead): string {
-  const score = lead.lead_score ?? "n/a";
+  const score = (lead as any).lead_score ?? "n/a";
   const email = lead.email ? "✉️" : "❌";
   const website = lead.website ? "🌐" : "❌";
   const phone = lead.phone ? "📞" : "❌";
@@ -101,24 +101,22 @@ export function buildHelpText(): string {
  *   - executions table health
  */
 export function buildStatsText(): string {
-  // Tolerant of DB errors (e.g. when called in tests without setupTestEnv)
-  let leads: any[] = [];
-  let health: any = { dbPath: "n/a", tables: [], ok: false };
-  try { leads = getAllLeads(1000); } catch {}
-  try { health = checkStorageHealth(); } catch {}
+  const leads = getAllLeads(1000);  // cap at 1000 to avoid memory issues
   const total = leads.length;
   const withEmail = leads.filter((l) => l.email).length;
   const withWebsite = leads.filter((l) => l.website).length;
   const withPhone = leads.filter((l) => l.phone).length;
-  const scored = leads.filter((l) => l.lead_score !== undefined);
+  const scored = leads.filter((l) => (l as any).lead_score !== undefined);
   const avgScore = scored.length > 0
-    ? Math.round(scored.reduce((sum, l) => sum + Number(l.lead_score), 0) / scored.length)
+    ? Math.round(scored.reduce((sum, l) => sum + Number((l as any).lead_score), 0) / scored.length)
     : 0;
-  const tierA = leads.filter((l) => (l.lead_score ?? 0) >= 75).length;
+  const tierA = leads.filter((l) => (l as any).lead_score >= 75).length;
   const tierB = leads.filter((l) => {
-    const s = Number(l.lead_score ?? 0);
+    const s = Number((l as any).lead_score ?? 0);
     return s >= 50 && s < 75;
   }).length;
+
+  const health = checkStorageHealth();
 
   return [
     "📊 *AGENTE LEADS — Stats*",

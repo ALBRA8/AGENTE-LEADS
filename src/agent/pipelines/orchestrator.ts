@@ -24,10 +24,7 @@ import { runDedup } from "./dedup.js";
 import { runScoring } from "./scoring.js";
 import { runIntelligence } from "./intelligence.js";
 import { generateReport } from "./report.js";
-import { saveExecution, saveLead } from "../storage/lead_intelligence.js";
-import { persistProviderMetrics } from "./quality.js";
-import { consolidateExecution } from "../memory/memorydv.js";
-import { CRMAlbraHooks } from "./crm_albra_hooks.js";
+import { saveExecution } from "../storage/lead_intelligence.js";
 
 export interface ParsedIntent {
   /** What the user is looking for, e.g. "restaurantes veganos" */
@@ -161,24 +158,15 @@ export async function runLeadPipeline(
   }
 
   // ── 6. SCORING (PARALLEL — pure computation) ──────────────
-  // CRITICAL FIX (ARCH-C1): re-save the lead after scoring so the lead_score
-  // evidence is persisted to the DB. Without this, /stats shows 0 scored
-  // leads and run_outreach skips every lead (score unknown).
   const scoredLeads: Lead[] = [];
   for (const batch of chunk(storedLeads, concurrency)) {
     const results = await Promise.all(
       batch.map((lead) => runScoring({ lead }, trace))
     );
-    // Re-save each scored lead to persist the lead_score evidence
-    for (const r of results) {
-      saveLead(r.lead);
-    }
     scoredLeads.push(...results.map((r) => r.lead));
   }
 
   // ── 7. INTELLIGENCE (PARALLEL — LLM calls, optional) ──────
-  // CRITICAL FIX (ARCH-C1): re-save the lead after intelligence so the
-  // llm_intelligence evidence is persisted to the DB.
   let intelligencedLeads = scoredLeads;
   let intelligencedCount = 0;
   if (intent.enable_intelligence !== false && intent.offer_description) {
@@ -187,10 +175,6 @@ export async function runLeadPipeline(
       const results = await Promise.all(
         batch.map((lead) => runIntelligence({ lead, offer_description: intent.offer_description }, trace))
       );
-      // Re-save each intelligenced lead to persist the llm_intelligence evidence
-      for (const r of results) {
-        saveLead(r.lead);
-      }
       intelligencedLeads.push(...results.map((r) => r.lead));
       intelligencedCount += results.length;
     }
@@ -205,26 +189,6 @@ export async function runLeadPipeline(
 
   const trace_done = trace.finish("success", `${intelligencedLeads.length} leads stored`);
   saveExecution(trace_done);
-
-  // ── 9. POST-RUN SUBSYSTEMS (non-blocking, best-effort) ─────
-  // §14 — persist per-provider quality metrics for historical analysis
-  try { persistProviderMetrics(trace_done); } catch {}
-  // §22 — consolidate execution learnings into MemoryDV (provenance-gated)
-  try { consolidateExecution(trace_done); } catch {}
-  // §26 — contractual CRM events (lead.scored + execution.completed)
-  try {
-    const crm = new CRMAlbraHooks({
-      webhook_url: process.env.CRM_ALBRA_WEBHOOK_URL || undefined,
-      secret: process.env.CRM_ALBRA_SECRET || undefined,
-      enabled: Boolean(process.env.CRM_ALBRA_WEBHOOK_URL),
-    });
-    if (crm.isConfigured()) {
-      for (const lead of scoredLeads) {
-        await crm.fireLeadScored(lead, lead.lead_score ?? 0, { execution_id: trace_done.id });
-      }
-      await crm.fireExecutionCompleted(trace_done);
-    }
-  } catch {}
 
   return {
     report_text: report.text,

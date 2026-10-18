@@ -20,11 +20,9 @@ dotenv.config({ override: true }); // override: el .env del proyecto gana sobre 
 
 // ── Env validation ─────────────────────────────────────────
 const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
-// FIX (QUAL-C4): catch both placeholder patterns — "AAAAAAAA" and "your_xxx_here"
-if (!BOT_TOKEN || BOT_TOKEN.includes("AAAAAAAA") || BOT_TOKEN.includes("your") || BOT_TOKEN.includes("placeholder")) {
+if (!BOT_TOKEN || BOT_TOKEN.includes("AAAAAAAA")) {
   throw new Error(
-    "[Telegram] TELEGRAM_BOT_TOKEN is missing or still a placeholder. " +
-      "Create a bot via @BotFather and set TELEGRAM_BOT_TOKEN in .env."
+    "[Telegram] TELEGRAM_BOT_TOKEN is missing or still a placeholder."
   );
 }
 
@@ -72,10 +70,8 @@ bot.use(async (ctx: Context, next) => {
 bot.command("start", async (ctx) => {
   await ctx.reply(
     `👋 *Hola, soy AGENTE LEADS.*\n\n` +
-      `Sistema de prospección inteligente B2B, impulsado por *GLM 5.3 Flash* vía NVIDIA NIM.\n\n` +
-      `Puedo descubrir, investigar, validar y puntuar leads automáticamente. ` +
-      `Escríbeme en lenguaje natural qué necesitas.\n\n` +
-      `Usa /help para ver los comandos disponibles.`,
+      `Tu agente de IA de élite para gestión de clientes y negocios, impulsado por *Kimi K2.5* vía NVIDIA NIM.\n\n` +
+      `Puedes escribirme cualquier cosa o enviarme una nota de voz. ¡Estoy listo!`,
     { parse_mode: "Markdown" }
   );
 });
@@ -127,16 +123,6 @@ bot.command("stats", async (ctx) => {
 bot.command("health", async (ctx) => {
   const h = checkHealth();
   await ctx.reply(formatHealth(h), { parse_mode: "Markdown" });
-});
-
-// ── /doctor command – PRODUCTION CLOSURE §32: full audit ─────
-bot.command("doctor", async (ctx) => {
-  const { runDoctor, formatDoctorReport } = await import("../agent/doctor.js");
-  const report = runDoctor();
-  const text = formatDoctorReport(report);
-  for (const chunk of splitMessage(text)) {
-    await ctx.reply(chunk);
-  }
 });
 
 // ── Text message handler ───────────────────────────────────

@@ -16,7 +16,7 @@
 import type { DiscoveryProvider } from "../providers/types.js";
 import type { CandidateLead } from "../core/lead.js";
 import type { ProviderError } from "../core/errors.js";
-import { makeError, shouldRetry, backoffDelayMs } from "../core/errors.js";
+import { shouldRetry, backoffDelayMs } from "../core/errors.js";
 import type { ExecutionRecorder } from "../core/execution.js";
 
 export interface DiscoveryInput {
@@ -59,10 +59,9 @@ export async function runDiscovery(
     const configured = await provider.isConfigured().catch(() => false);
     if (!configured) {
       trace?.skip(`discovery.${provider.name}`, "provider not configured", { provider: provider.name });
-      // FIX (QUAL-C2): use makeError for consistent error shape (retryable flag from taxonomy)
       failed.push({
         name: provider.name,
-        error: makeError("PROVIDER_UNAVAILABLE", "not configured", { provider: provider.name }),
+        error: { type: "PROVIDER_UNAVAILABLE", message: "not configured", retryable: false },
       });
       continue;
     }

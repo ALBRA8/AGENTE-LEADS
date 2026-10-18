@@ -61,7 +61,7 @@ export function generateReport(input: ReportInput): ReportOutput {
     lines.push(`| Campo | Valor | Estado | Confianza |`);
     lines.push(`|-------|-------|--------|-----------|`);
 
-    // Use the canonical order: identity → contact → location → niche → P1 extras
+    // Use the canonical order: identity → contact → location → niche
     const fields: Array<keyof typeof FIELD_LABELS> = [
       "instagram",
       "website",
@@ -70,8 +70,6 @@ export function generateReport(input: ReportInput): ReportOutput {
       "linkedin",
       "location",
       "category",
-      "lead_score",
-      "llm_intelligence",
     ];
     for (const field of fields) {
       const ev = lead.evidence.find((e) => e.field === field);
@@ -157,8 +155,6 @@ const FIELD_LABELS = {
   linkedin: "LinkedIn",
   location: "Ubicación",
   category: "Categoría",
-  lead_score: "Lead Score",
-  llm_intelligence: "Inteligencia LLM",
 } as const;
 
 const VALIDATION_LABELS: Record<string, string> = {

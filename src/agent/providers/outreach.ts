@@ -79,7 +79,6 @@ export class SendGridEmailProvider implements EmailOutreachProvider {
           from: { email: fromEmail },
           content: [{ type: "text/plain", value: input.body }],
         }),
-        signal: AbortSignal.timeout(30_000),
       });
 
       if (!res.ok) {
@@ -151,7 +150,6 @@ export class WhatsAppCloudProvider implements WhatsAppOutreachProvider {
             preview_url: false,
           },
         }),
-        signal: AbortSignal.timeout(30_000),
       });
 
       if (!res.ok) {

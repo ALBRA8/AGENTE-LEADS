@@ -127,7 +127,7 @@ test("scoreLead: empty lead scores low", () => {
 test("runScoring: attaches lead_score to lead + adds evidence", async () => {
   const lead = makeLead();
   const result = await runScoring({ lead });
-  assert.equal(result.lead.lead_score, result.score);
+  assert.equal((result.lead as any).lead_score, result.score);
   // Should have added an INFERRED evidence record for "lead_score"
   const scoreEv = result.lead.evidence.find((e) => e.field === "lead_score");
   assert.ok(scoreEv);

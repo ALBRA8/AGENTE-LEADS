@@ -137,22 +137,14 @@ function buildLLMInput(lead: Lead, offerDescription?: string): string {
   lines.push(`- Username: ${lead.username ?? "n/a"}`);
   lines.push(`- Platform: ${lead.platform ?? "n/a"}`);
   lines.push(`- URL: ${lead.url ?? "n/a"}`);
-  // FIX (ARCH-H3): use evidence status labels instead of "NOT FOUND"
-  // (P0.6: distinguish "searched, didn't find" from "didn't search")
-  const websiteStatus = lead.evidence.find((e) => e.field === "website");
-  const emailStatus = lead.evidence.find((e) => e.field === "email");
-  const phoneStatus = lead.evidence.find((e) => e.field === "phone");
-  lines.push(`- Website: ${lead.website ?? `(${websiteStatus?.status ?? "no investigado"})`}`);
-  lines.push(`- Email: ${lead.email ?? `(${emailStatus?.status ?? "no investigado"})`}`);
-  lines.push(`- Phone: ${lead.phone ?? `(${phoneStatus?.status ?? "no investigado"})`}`);
+  lines.push(`- Website: ${lead.website ?? "NOT FOUND"}`);
+  lines.push(`- Email: ${lead.email ?? "NOT FOUND"}`);
+  lines.push(`- Phone: ${lead.phone ?? "NOT FOUND"}`);
   lines.push(`- Location: ${lead.location ?? "n/a"}`);
   lines.push(`- Category: ${lead.category ?? "n/a"}`);
   lines.push(`- Sources: ${lead.sources.join(", ")}`);
   lines.push(`- Discovered at: ${lead.discovered_at}`);
   lines.push(`- Research state: ${lead.research_state}`);
-  if (lead.lead_score !== undefined) {
-    lines.push(`- Lead Score: ${lead.lead_score}/100`);
-  }
 
   if (lead.validation && Object.keys(lead.validation).length > 0) {
     lines.push("");

@@ -124,31 +124,10 @@ function mergeLeads(existing: Lead, incoming: Lead): Lead {
     sources: [...new Set([...(existing.sources ?? []), ...(incoming.sources ?? [])])],
     discovered_at: existing.discovered_at,
     evidence: dedupEvidence([...(existing.evidence ?? []), ...(incoming.evidence ?? [])]),
-    // FIX (ARCH-H5): validation merge — existing wins per key
-    // (prevents incoming "unknown" from overwriting existing "valid")
-    validation: mergeValidation(existing.validation ?? {}, incoming.validation ?? {}),
+    validation: { ...(existing.validation ?? {}), ...(incoming.validation ?? {}) },
     research_state: pickMoreAdvanced(existing.research_state, incoming.research_state),
     dedup_signature: existing.dedup_signature ?? incoming.dedup_signature,
-    lead_score: existing.lead_score ?? incoming.lead_score,
   };
-  return merged;
-}
-
-/**
- * Merge validation states — existing wins per key.
- * If existing has email:valid and incoming has email:unknown, keep valid.
- * Only fill in keys that existing doesn't have.
- */
-function mergeValidation(
-  existing: NonNullable<Lead["validation"]>,
-  incoming: NonNullable<Lead["validation"]>
-): NonNullable<Lead["validation"]> {
-  const merged: NonNullable<Lead["validation"]> = { ...existing };
-  for (const [key, val] of Object.entries(incoming)) {
-    if (!merged[key as keyof typeof merged]) {
-      (merged as any)[key] = val;
-    }
-  }
   return merged;
 }
 
