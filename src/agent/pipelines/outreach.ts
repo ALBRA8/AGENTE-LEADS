@@ -25,7 +25,8 @@
 // P2.4 honors this: no DM bots, no CAPTCHA bypass, no fake accounts.
 // ============================================================
 
-import { nvidiaNIMClient, NVIDIA_CONFIG, withRetry } from "../../config/nvidia.js";
+// FASE 8 (LIPO): use bridge-aware AI
+import { aiChatViaBridgeText } from "../../lib/ai-bridge-adapter.js";
 import type { Lead } from "../core/lead.js";
 import { inferred, type EvidenceRecord } from "../core/evidence.js";
 import type { ExecutionRecorder } from "../core/execution.js";
@@ -234,20 +235,12 @@ async function generateProposal(
   const userMsg = buildProposalPrompt(lead, offerDescription, style);
 
   try {
-    const response = await withRetry(
-      () => nvidiaNIMClient.chat.completions.create({
-        model: NVIDIA_CONFIG.model,
-        messages: [
-          { role: "system", content: SYSTEM_PROMPT.replace("{STYLE}", style) },
-          { role: "user", content: userMsg },
-        ],
-        temperature: 0.5,
-        max_tokens: NVIDIA_CONFIG.maxTokens,
-      }),
-      "proposal generation"
-    );
+    // FASE 8: route through bridge (falls back to direct nvidiaNIMClient)
+    const content = await aiChatViaBridgeText([
+      { role: "system", content: SYSTEM_PROMPT.replace("{STYLE}", style) },
+      { role: "user", content: userMsg },
+    ]);
 
-    const content = response?.choices?.[0]?.message?.content;
     if (!content) {
       end?.({ error: { type: "EMPTY_RESULT", message: "LLM returned no proposal", retryable: false } });
       return "(No se pudo generar la propuesta — LLM returned empty.)";

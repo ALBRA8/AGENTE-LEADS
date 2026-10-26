@@ -14,7 +14,8 @@
 // If evidence is missing, the LLM says "no determinable".
 // ============================================================
 
-import { nvidiaNIMClient, NVIDIA_CONFIG, withRetry } from "../../config/nvidia.js";
+// FASE 8 (LIPO): use bridge-aware AI instead of direct nvidiaNIMClient
+import { aiChatViaBridgeText } from "../../lib/ai-bridge-adapter.js";
 import type { Lead } from "../core/lead.js";
 import { inferred, type EvidenceRecord } from "../core/evidence.js";
 import type { ExecutionRecorder } from "../core/execution.js";
@@ -79,22 +80,12 @@ export async function runIntelligence(
   const userMsg = buildLLMInput(input.lead, input.offer_description);
 
   try {
-    const response = await withRetry(
-      () =>
-        nvidiaNIMClient.chat.completions.create({
-          model: NVIDIA_CONFIG.model,
-          messages: [
-            { role: "system", content: SYSTEM_PROMPT },
-            { role: "user", content: userMsg },
-          ],
-          temperature: 0.5,
-          top_p: 1,
-          max_tokens: NVIDIA_CONFIG.maxTokens,  // 4096 — enough for reasoning + answer
-        }),
-      "intelligence LLM call"
-    );
+    // FASE 8: route through bridge (falls back to direct nvidiaNIMClient)
+    const content = await aiChatViaBridgeText([
+      { role: "system", content: SYSTEM_PROMPT },
+      { role: "user", content: userMsg },
+    ]);
 
-    const content = response?.choices?.[0]?.message?.content;
     if (!content) {
       end?.({ error: { type: "EMPTY_RESULT", message: "LLM returned no content", retryable: false } });
       return { lead: input.lead, intelligence: makeFallbackIntelligence(input.lead) };

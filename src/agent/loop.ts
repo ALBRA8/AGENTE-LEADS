@@ -8,7 +8,9 @@ import type {
   ChatCompletionToolMessageParam,
 } from "openai/resources/chat/completions.js";
 
-import { nvidiaNIMClient, NVIDIA_CONFIG, withRetry } from "../config/nvidia.js";
+// FASE 8 (LIPO): use bridge-aware AI instead of direct nvidiaNIMClient
+import { aiChatViaBridge } from "../lib/ai-bridge-adapter.js";
+import { NVIDIA_CONFIG } from "../config/nvidia.js";
 import {
   saveMessage,
   getRecentMessages,
@@ -113,21 +115,16 @@ export async function runAgentLoop(input: AgentInput): Promise<AgentOutput> {
   for (let i = 0; i < maxIterations; i++) {
     iterations++;
 
-    const response = await withRetry(
-      () =>
-        nvidiaNIMClient.chat.completions.create({
-          model: NVIDIA_CONFIG.model,
-          messages,
-          tools: tools.map((t: Tool) => t.definition),
-          tool_choice: "auto",
-          max_tokens: NVIDIA_CONFIG.maxTokens,
-          temperature: NVIDIA_CONFIG.temperature,
-          top_p: NVIDIA_CONFIG.topP,
-        }),
-      `iteration ${i + 1}`
-    );
+    // FASE 8: route through bridge (falls back to direct nvidiaNIMClient)
+    const result = await aiChatViaBridge({
+      messages: messages as any[],
+      tools: tools.map((t: Tool) => t.definition),
+      temperature: NVIDIA_CONFIG.temperature,
+      max_tokens: NVIDIA_CONFIG.maxTokens,
+    });
 
-    const choice = response.choices[0];
+    if (!result.raw) throw new Error("[AgentLoop] Empty response from NVIDIA NIM");
+    const choice = result.raw.choices[0];
     if (!choice) throw new Error("[AgentLoop] Empty response from NVIDIA NIM");
 
     const assistantMessage = choice.message;
@@ -145,10 +142,10 @@ export async function runAgentLoop(input: AgentInput): Promise<AgentOutput> {
     // 4b. Tool calls → execute in parallel and feed results back
     const toolCalls = assistantMessage.tool_calls;
 
-    console.log(`[AgentLoop] ⚡ Orchestrating ${toolCalls.length} tool calls in parallel...`);
+    console.log(`[AgentLoop] ⚡ Orchestrating ${toolCalls!.length} tool calls in parallel...`);
 
     const toolResults = await Promise.all(
-      toolCalls.map(async (toolCall) => {
+      toolCalls!.map(async (toolCall: any) => {
         const fnName = toolCall.function.name;
         let args: Record<string, unknown> = {};
 
