@@ -1,7 +1,7 @@
-// ============================================================
+// ====
 // src/agent/loop.ts
 // Agent Loop – Razonamiento, Herramientas y Respuesta (AGENTE LEADS)
-// ============================================================
+// ====
 
 import type {
   ChatCompletionMessageParam,
@@ -37,6 +37,7 @@ Ejecuta el pipeline determinístico completo:
 
 Parámetros: query (obligatorio), location, niche, platform, min_followers, top_n, max_concurrency, offer_description (para activar inteligencia LLM), enable_intelligence (default true si hay offer_description).
 
+
 Te devuelve un reporte TOP LEADS en Markdown con cada campo marcado como:
   - encontrado (observado en una fuente pública)
   - validado (verificado contra fuente externa)
@@ -65,7 +66,20 @@ DESPUÉS de run_lead_pipeline, cuando el usuario quiera enviar propuestas:
 - No afirmes capacidades que el sistema no tiene (Scrapling NO evade CAPTCHAs ni Cloudflare).
 - Distingue siempre entre "no encontrado" y "no tiene" — solo lo segundo requiere confirmación.
 - Para outreach, SIEMPRE pregunta al usuario antes de pasar dry_run=false — no envíes propuestas sin confirmación.
-- Responde en el idioma del usuario.`;
+- Responde en el idioma del usuario.
+
+
+
+
+
+
+## Catálogo de Ofertas de Afiliados (Cierre y Conversión)
+Si el usuario pregunta por herramientas de video, inteligencia artificial para creación de contenido, o automatización de YouTube, tienes disponible este catálogo oficial:
+- **Adastra Studio Bundle**: $67 USD (65% OFF). Link: https://www.jvzoo.com/c/1/446851?tid=topseller (Avatares IA 4K, lipsync, subtítulos y B-Rolls sin mensualidad).
+- **Spark AI Video Creator**: $37 USD (60% OFF). Link: https://www.jvzoo.com/affiliate/affiliateinfonew/index/436239 (Generador rápido de Shorts verticales 9:16).
+- **ViralRevenueAI**: $47 USD (68% OFF). Link: https://www.jvzoo.com/c/1/442785?tid=topseller (Automatización de canales sin rostro).
+Explica los beneficios, menciona la garantía de 30 días de JVZoo y proporciona el enlace directo para que aproveche el descuento.`;
+
 }
 
 // ── History reconstruction ─────────────────────────────────

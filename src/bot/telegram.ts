@@ -8,6 +8,7 @@ import path from "path";
 import fs from "fs";
 import { runAgentLoop } from "../agent/loop.js";
 import { upsertUser } from "../database/sqlite.js";
+import { AFFILIATE_PRODUCTS, findProductByQuery, formatProductPitch } from "../agent/affiliate-catalog.js";
 import dotenv from "dotenv";
 import {
   splitMessage,
@@ -66,14 +67,45 @@ bot.use(async (ctx: Context, next) => {
   await next();
 });
 
-// ── /start command ─────────────────────────────────────────
+// ── /start command (soporta deep-linking para ofertas de afiliados) ───
 bot.command("start", async (ctx) => {
+  const match = (ctx.match || "").toLowerCase().trim();
+  if (match) {
+    const prod = findProductByQuery(match);
+    if (prod) {
+      await ctx.reply(formatProductPitch(prod), { parse_mode: "Markdown" });
+      return;
+    }
+  }
+
   await ctx.reply(
     `👋 *Hola, soy AGENTE LEADS.*\n\n` +
       `Tu agente de IA de élite para gestión de clientes y negocios, impulsado por *Kimi K2.5* vía NVIDIA NIM.\n\n` +
-      `Puedes escribirme cualquier cosa o enviarme una nota de voz. ¡Estoy listo!`,
+      `Puedes escribirme cualquier cosa o enviarme una nota de voz.\n` +
+      `Usa */ofertas* para ver el catálogo de herramientas recomendadas con descuento de afiliado.`,
     { parse_mode: "Markdown" }
   );
+});
+
+// ── /ofertas & /catalogo commands – affiliate funnel ───────────
+bot.command(["ofertas", "catalogo", "oferta"], async (ctx) => {
+  const prods = Object.values(AFFILIATE_PRODUCTS);
+  let msg = `💎 *CATÁLOGO DE HERRAMIENTAS Y OFERTAS EXCLUSIVAS*\n\n`;
+  for (const p of prods) {
+    msg += `• *${p.name}* — ${p.dealPrice} (${p.discountPct})\n  🔗 [Ver oferta en JVZoo](${p.affiliateUrl})\n\n`;
+  }
+  msg += `💡 Para ver los detalles completos de una oferta escribe por ejemplo: */adastra* o */spark*.`;
+  await ctx.reply(msg, { parse_mode: "Markdown" });
+});
+
+bot.command("adastra", async (ctx) => {
+  const prod = AFFILIATE_PRODUCTS["adastra"];
+  await ctx.reply(formatProductPitch(prod), { parse_mode: "Markdown" });
+});
+
+bot.command("spark", async (ctx) => {
+  const prod = AFFILIATE_PRODUCTS["spark"];
+  await ctx.reply(formatProductPitch(prod), { parse_mode: "Markdown" });
 });
 
 // ── /clear command – wipe conversation history ─────────────
