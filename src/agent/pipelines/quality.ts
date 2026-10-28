@@ -97,3 +97,52 @@ export function formatProviderMetrics(metrics: ProviderMetric[]): string {
   }
   return lines.join("\n");
 }
+
+// ── PRODUCTION CLOSURE §14: Persistence + Degradation ────
+import { getDb } from "../storage/lead_intelligence.js";
+import { ensureAgentInfraTables } from "../storage/agent_infra.js";
+
+/** Persist provider metrics to the provider_metrics table (§14) */
+export function persistProviderMetrics(trace: ExecutionTrace): void {
+  ensureAgentInfraTables();
+  const metrics = computeProviderMetrics(trace);
+  const db = getDb();
+  const stmt = db.prepare(`
+    INSERT INTO provider_metrics (provider, execution_id, requests, success_rate, failure_rate, avg_latency_ms, usable_results, failure_breakdown, recorded_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+  for (const m of metrics) {
+    const failureRate = m.total_calls > 0 ? (m.failed_calls / m.total_calls) : 0;
+    stmt.run(
+      m.provider,
+      trace.id,
+      m.total_calls,
+      m.success_rate,
+      failureRate,
+      m.avg_latency_ms,
+      m.successful_calls,
+      JSON.stringify(m.failure_breakdown),
+      new Date().toISOString()
+    );
+  }
+}
+
+/** Check if a provider is degraded (success rate below 50% in recent calls) */
+export function isProviderDegraded(providerName: string): { degraded: boolean; window_requests: number; avg_success_rate: number } {
+  ensureAgentInfraTables();
+  const db = getDb();
+  const rows = db.prepare(`
+    SELECT requests, success_rate FROM provider_metrics
+    WHERE provider = ?
+    ORDER BY recorded_at DESC
+    LIMIT 10
+  `).all(providerName) as any[];
+  if (rows.length === 0) return { degraded: false, window_requests: 0, avg_success_rate: 0 };
+  const totalRequests = rows.reduce((s, r) => s + (r.requests || 0), 0);
+  const avgRate = rows.reduce((s, r) => s + (r.success_rate || 0), 0) / rows.length;
+  return {
+    degraded: avgRate < 50,
+    window_requests: totalRequests,
+    avg_success_rate: Math.round(avgRate * 100) / 100,
+  };
+}

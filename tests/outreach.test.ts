@@ -7,6 +7,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { setupTestEnv, cleanupTestEnv } from "./setup.js";
 import { runOutreach } from "../src/agent/pipelines/outreach.js";
 import { MockOutreachProvider } from "../src/agent/providers/outreach.js";
 import { CRMAlbraHooks } from "../src/agent/pipelines/crm_albra_hooks.js";
@@ -67,6 +68,8 @@ test("runOutreach: skips leads below min_score", async () => {
 });
 
 test("runOutreach: skips leads with no contact channel", async () => {
+  setupTestEnv();
+  try {
   const lead = makeLead({ email: undefined, phone: undefined, validation: {} });
   (lead as any).lead_score = 70;
 
@@ -83,6 +86,7 @@ test("runOutreach: skips leads with no contact channel", async () => {
 
   assert.equal(result.skipped, 1);
   assert.ok(result.results[0].skip_reason!.includes("no_contact_channel"));
+  } finally { cleanupTestEnv(); }
 });
 
 test("runOutreach: dry_run=true generates proposal but doesn't send", async () => {
@@ -106,6 +110,8 @@ test("runOutreach: dry_run=true generates proposal but doesn't send", async () =
 });
 
 test("runOutreach: with email provider configured, sends email for validated email leads", async () => {
+  setupTestEnv();
+  try {
   const lead = makeLead();
   (lead as any).lead_score = 70;
 
@@ -124,9 +130,12 @@ test("runOutreach: with email provider configured, sends email for validated ema
   assert.equal(result.results[0].status, "sent");
   assert.equal(result.results[0].channel, "email");
   assert.ok(result.results[0].message_id);
+  } finally { cleanupTestEnv(); }
 });
 
 test("runOutreach: uses WhatsApp for leads without email but with phone", async () => {
+  setupTestEnv();
+  try {
   const lead = makeLead({
     email: undefined,
     phone: "+573115678901",
@@ -148,9 +157,12 @@ test("runOutreach: uses WhatsApp for leads without email but with phone", async 
   assert.equal(result.sent, 1);
   assert.equal(result.results[0].channel, "whatsapp");
   assert.equal(result.results[0].status, "sent");
+  } finally { cleanupTestEnv(); }
 });
 
 test("runOutreach: attaches outreach_sent evidence to lead", async () => {
+  setupTestEnv();
+  try {
   const lead = makeLead();
   (lead as any).lead_score = 70;
   const before = lead.evidence.length;
@@ -171,9 +183,12 @@ test("runOutreach: attaches outreach_sent evidence to lead", async () => {
   const ev = lead.evidence.find((e) => e.field === "outreach_sent");
   assert.ok(ev);
   assert.equal(ev!.status, "INFERRED");
+  } finally { cleanupTestEnv(); }
 });
 
 test("runOutreach: fires CRM-ALBRA webhook on send (if configured)", async () => {
+  setupTestEnv();
+  try {
   const lead = makeLead();
   (lead as any).lead_score = 70;
 
@@ -197,6 +212,7 @@ test("runOutreach: fires CRM-ALBRA webhook on send (if configured)", async () =>
   // CRM hook stats: 1 attempt (may or may not have succeeded due to invalid URL)
   const stats = crmHooks.getStats();
   assert.ok(stats.sent + stats.failed >= 1, "CRM hook should have been attempted");
+  } finally { cleanupTestEnv(); }
 });
 
 // ── CRM-ALBRA hooks (P2.3) ────────────────────────────────

@@ -32,6 +32,7 @@ import { inferred, type EvidenceRecord } from "../core/evidence.js";
 import type { ExecutionRecorder } from "../core/execution.js";
 import type { EmailOutreachProvider, WhatsAppOutreachProvider, OutreachInput, OutreachResult } from "../providers/outreach.js";
 import { CRMAlbraHooks } from "./crm_albra_hooks.js";
+import { makeIdempotencyKey, hasBeenSent, logOutreachSend, ensureAgentInfraTables } from "../storage/agent_infra.js";
 
 export interface OutreachInput_Pipeline {
   leads: Lead[];
@@ -96,6 +97,9 @@ export async function runOutreach(
   const minScore = input.min_score ?? 50;
   const dryRun = input.dry_run !== false;  // safety default: dry run unless explicitly false
   const style = input.style ?? "professional";
+
+  // Ensure infra tables exist (needed for idempotency checks)
+  try { ensureAgentInfraTables(); } catch {}
 
   const end = trace?.start("outreach", {
     intent: `outreach to ${input.leads.length} leads (min score ${minScore}, dry_run=${dryRun})`,
@@ -177,10 +181,31 @@ export async function runOutreach(
       lead_name: lead.name,
     };
 
+    // §25: Idempotency check — if this lead+channel+offer was already sent, skip
+    const idemKey = makeIdempotencyKey(lead.id ?? lead.name, channel, input.offer_description);
+    let alreadySent = false;
+    if (!dryRun) {
+      try { alreadySent = hasBeenSent(idemKey); } catch { /* DB not ready — skip idempotency */ }
+    }
+    if (alreadySent) {
+      results.push({
+        lead, channel, proposal,
+        status: "skipped",
+        skip_reason: "already_sent (idempotency: this lead+channel+offer was already sent)",
+      });
+      skipped++;
+      skipReasons.set("already_sent_idempotency", (skipReasons.get("already_sent_idempotency") ?? 0) + 1);
+      continue;
+    }
+
     const sendResult = await providerForChannel!.send(outreachInput);
 
     if (sendResult.ok && sendResult.data) {
       sent++;
+      // §25: Log to outreach_log for idempotency (NOT in dry_run)
+      if (!dryRun) {
+        try { logOutreachSend(idemKey, lead.id ?? lead.name, channel, sendResult.data.message_id, "sent"); } catch {}
+      }
       // Attach evidence record
       const ev: EvidenceRecord = inferred(
         "outreach_sent",

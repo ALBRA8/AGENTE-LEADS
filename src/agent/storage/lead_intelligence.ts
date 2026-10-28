@@ -147,7 +147,18 @@ export function resetStorageForTests(): void {
     _db.exec("DELETE FROM lead_intelligence_leads;");
     _db.exec("DELETE FROM executions;");
     _db.exec("DELETE FROM dedup_matches;");
-    _db.exec("DELETE FROM sqlite_sequence WHERE name IN ('lead_intelligence_evidence','lead_intelligence_sources','dedup_matches');");
+    // Also clear agent_infra tables (skills, runs, feedback, outreach_log, etc.)
+    // so tests that use the skills registry don't accumulate state between runs.
+    _db.exec("DELETE FROM agent_skills;");
+    _db.exec("DELETE FROM skill_runs;");
+    _db.exec("DELETE FROM lead_feedback;");
+    _db.exec("DELETE FROM provider_feedback;");
+    _db.exec("DELETE FROM outreach_feedback;");
+    _db.exec("DELETE FROM outreach_log;");
+    _db.exec("DELETE FROM provider_metrics;");
+    _db.exec("DELETE FROM tool_audit;");
+    _db.exec("DELETE FROM agent_memory;");
+    _db.exec("DELETE FROM sqlite_sequence WHERE name IN ('lead_intelligence_evidence','lead_intelligence_sources','dedup_matches','skill_runs','lead_feedback','provider_feedback','outreach_feedback','outreach_log','provider_metrics','tool_audit','agent_memory');");
   } catch (e) {
     // Schema might not be initialized yet on first call — that's OK
   }
@@ -158,7 +169,23 @@ export function resetStorageForTests(): void {
 //   node::RemoveEnvironmentCleanupHook: Assertion failed: (env) != nullptr
 // We register both 'beforeExit' (async before exit) and 'exit' (sync at exit)
 // to maximize the chance of a clean close before GC runs.
+// We also track ALL prepared statements and finalize them before close.
+const _preparedStmts: Set<any> = new Set();
+
+/** Wrap db().prepare() to track statements for cleanup */
+function trackedPrepare(...args: any[]): any {
+  const stmt = _db!.prepare(...(args as [any]));
+  _preparedStmts.add(stmt);
+  return stmt;
+}
+
 const _closeDb = () => {
+  // First, finalize all tracked prepared statements
+  for (const stmt of _preparedStmts) {
+    try { (stmt as any).finalize?.(); } catch {}
+  }
+  _preparedStmts.clear();
+  // Then close the connection
   if (_db) {
     try { _db.close(); } catch {}
     _db = null;
@@ -166,6 +193,11 @@ const _closeDb = () => {
 };
 process.on("beforeExit", _closeDb);
 process.on("exit", _closeDb);
+
+/** Exported for tests that need to explicitly close the DB */
+export function closeDbForTests(): void {
+  _closeDb();
+}
 
 // (Schema is created inside initDb() — see above. No need for a top-level exec.)
 
