@@ -126,7 +126,7 @@ export const runOutreachTool: Tool = {
       lines.push(`**Detalle por lead:**`);
       for (const r of result.results) {
         lines.push(``);
-        const score = r.lead.lead_score ?? "n/a";
+        const score = (r.lead as any).lead_score ?? "n/a";
         lines.push(`### ${r.lead.name} (score ${score}/100) — ${r.status.toUpperCase()}`);
         if (r.channel) lines.push(`- Canal: ${r.channel}`);
         if (r.message_id) lines.push(`- Message ID: ${r.message_id}`);

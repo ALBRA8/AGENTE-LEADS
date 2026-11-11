@@ -1,6 +1,5 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { setupTestEnv, cleanupTestEnv } from "./setup.js";
 import {
   splitMessage,
   escapeMarkdownV2,
@@ -55,7 +54,7 @@ test("formatLeadSummary: includes name and score", () => {
     validation: {},
     research_state: "VALIDATED",
   } as Lead;
-  lead.lead_score = 75;
+  (lead as any).lead_score = 75;
   const summary = formatLeadSummary(lead);
   assert.ok(summary.includes("Test Business"));
   assert.ok(summary.includes("75"));
@@ -69,14 +68,9 @@ test("buildHelpText: includes command list", () => {
 });
 
 test("buildStatsText: returns formatted stats (may be empty if DB clean)", () => {
-  setupTestEnv();
-  try {
-    const stats = buildStatsText();
-    assert.ok(stats.includes("AGENTE LEADS"));
-    assert.ok(stats.includes("Leads almacenados"));
-  } finally {
-    cleanupTestEnv();
-  }
+  const stats = buildStatsText();
+  assert.ok(stats.includes("AGENTE LEADS"));
+  assert.ok(stats.includes("Leads almacenados"));
 });
 
 test("TELEGRAM_MAX_MESSAGE_LENGTH: is 4096", () => {

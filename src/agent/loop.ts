@@ -1,14 +1,16 @@
-// ============================================================
+// ====
 // src/agent/loop.ts
 // Agent Loop – Razonamiento, Herramientas y Respuesta (AGENTE LEADS)
-// ============================================================
+// ====
 
 import type {
   ChatCompletionMessageParam,
   ChatCompletionToolMessageParam,
 } from "openai/resources/chat/completions.js";
 
-import { nvidiaNIMClient, NVIDIA_CONFIG, withRetry } from "../config/nvidia.js";
+// FASE 8 (LIPO): use bridge-aware AI instead of direct nvidiaNIMClient
+import { aiChatViaBridge } from "../lib/ai-bridge-adapter.js";
+import { NVIDIA_CONFIG } from "../config/nvidia.js";
 import {
   saveMessage,
   getRecentMessages,
@@ -34,6 +36,7 @@ Ejecuta el pipeline determinístico completo:
   DESCUBRIR → INVESTIGAR → VALIDAR → DEDUPLICAR → SCORING → INTELIGENCIA (LLM) → ALMACENAR → REPORTAR
 
 Parámetros: query (obligatorio), location, niche, platform, min_followers, top_n, max_concurrency, offer_description (para activar inteligencia LLM), enable_intelligence (default true si hay offer_description).
+
 
 Te devuelve un reporte TOP LEADS en Markdown con cada campo marcado como:
   - encontrado (observado en una fuente pública)
@@ -69,7 +72,20 @@ Cuando encuentres un enlace a un PDF o .docx con información del negocio (catá
 - No afirmes capacidades que el sistema no tiene (Scrapling NO evade CAPTCHAs ni Cloudflare).
 - Distingue siempre entre "no encontrado" y "no tiene" — solo lo segundo requiere confirmación.
 - Para outreach, SIEMPRE pregunta al usuario antes de pasar dry_run=false — no envíes propuestas sin confirmación.
-- Responde en el idioma del usuario.`;
+- Responde en el idioma del usuario.
+
+
+
+
+
+
+## Catálogo de Ofertas de Afiliados (Cierre y Conversión)
+Si el usuario pregunta por herramientas de video, inteligencia artificial para creación de contenido, o automatización de YouTube, tienes disponible este catálogo oficial:
+- **Adastra Studio Bundle**: $67 USD (65% OFF). Link: https://www.jvzoo.com/c/1/446851?tid=topseller (Avatares IA 4K, lipsync, subtítulos y B-Rolls sin mensualidad).
+- **Spark AI Video Creator**: $37 USD (60% OFF). Link: https://www.jvzoo.com/affiliate/affiliateinfonew/index/436239 (Generador rápido de Shorts verticales 9:16).
+- **ViralRevenueAI**: $47 USD (68% OFF). Link: https://www.jvzoo.com/c/1/442785?tid=topseller (Automatización de canales sin rostro).
+Explica los beneficios, menciona la garantía de 30 días de JVZoo y proporciona el enlace directo para que aproveche el descuento.`;
+
 }
 
 // ── History reconstruction ─────────────────────────────────
@@ -119,21 +135,16 @@ export async function runAgentLoop(input: AgentInput): Promise<AgentOutput> {
   for (let i = 0; i < maxIterations; i++) {
     iterations++;
 
-    const response = await withRetry(
-      () =>
-        nvidiaNIMClient.chat.completions.create({
-          model: NVIDIA_CONFIG.model,
-          messages,
-          tools: tools.map((t: Tool) => t.definition),
-          tool_choice: "auto",
-          max_tokens: NVIDIA_CONFIG.maxTokens,
-          temperature: NVIDIA_CONFIG.temperature,
-          top_p: NVIDIA_CONFIG.topP,
-        }),
-      `iteration ${i + 1}`
-    );
+    // FASE 8: route through bridge (falls back to direct nvidiaNIMClient)
+    const result = await aiChatViaBridge({
+      messages: messages as any[],
+      tools: tools.map((t: Tool) => t.definition),
+      temperature: NVIDIA_CONFIG.temperature,
+      max_tokens: NVIDIA_CONFIG.maxTokens,
+    });
 
-    const choice = response.choices[0];
+    if (!result.raw) throw new Error("[AgentLoop] Empty response from NVIDIA NIM");
+    const choice = result.raw.choices[0];
     if (!choice) throw new Error("[AgentLoop] Empty response from NVIDIA NIM");
 
     const assistantMessage = choice.message;
@@ -151,10 +162,10 @@ export async function runAgentLoop(input: AgentInput): Promise<AgentOutput> {
     // 4b. Tool calls → execute in parallel and feed results back
     const toolCalls = assistantMessage.tool_calls;
 
-    console.log(`[AgentLoop] ⚡ Orchestrating ${toolCalls.length} tool calls in parallel...`);
+    console.log(`[AgentLoop] ⚡ Orchestrating ${toolCalls!.length} tool calls in parallel...`);
 
     const toolResults = await Promise.all(
-      toolCalls.map(async (toolCall) => {
+      toolCalls!.map(async (toolCall: any) => {
         const fnName = toolCall.function.name;
         let args: Record<string, unknown> = {};
 

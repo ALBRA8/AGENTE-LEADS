@@ -220,3 +220,30 @@ export function getToolAudit(limit = 50): any[] {
     .prepare("SELECT * FROM tool_audit ORDER BY created_at DESC, id DESC LIMIT ?")
     .all(limit) as any[];
 }
+
+// ── PRODUCTION CLOSURE §25: Outreach Idempotency ──────────
+
+import { createHash } from "crypto";
+
+/** Generate an idempotency key from lead_id + channel + offer */
+export function makeIdempotencyKey(leadId: string, channel: string, offer: string): string {
+  return createHash("sha256").update(`${leadId}|${channel}|${offer}`).digest("hex").substring(0, 32);
+}
+
+/** Check if this lead+channel+offer combo has already been sent */
+export function hasBeenSent(idempotencyKey: string): boolean {
+  ensureAgentInfraTables();
+  const row = getDb().prepare("SELECT id FROM outreach_log WHERE idempotency_key = ? AND status = 'sent'").get(idempotencyKey) as any;
+  return Boolean(row);
+}
+
+/** Log an outreach send to the idempotency table */
+export function logOutreachSend(idempotencyKey: string, leadId: string, channel: string, messageId: string | undefined, status: string): void {
+  ensureAgentInfraTables();
+  try {
+    getDb().prepare(`
+      INSERT OR IGNORE INTO outreach_log (idempotency_key, lead_id, channel, message_id, status)
+      VALUES (?, ?, ?, ?, ?)
+    `).run(idempotencyKey, leadId, channel, messageId ?? null, status);
+  } catch {}
+}

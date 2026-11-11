@@ -15,6 +15,9 @@ export interface CandidateLead {
   username?: string | null;
   platform?: string | null;       // "instagram" | "google_search" | "linkedin" | ...
   url?: string | null;
+  website?: string | null;
+  email?: string | null;
+  phone?: string | null;
   location?: string | null;
   category?: string | null;
   niche?: string | null;
@@ -58,9 +61,6 @@ export interface Lead {
 
   /** Dedup signature (P0.7) — pre-computed to speed up dedup */
   dedup_signature?: DedupSignature;
-
-  /** P1.1: numeric Lead Score (0-100) — populated by runScoring */
-  lead_score?: number;
 }
 
 export interface ValidationState {
@@ -173,19 +173,7 @@ export function extractSocialFromUrl(url: string | undefined | null, platform: s
   if (!url) return null;
   const lower = url.toLowerCase();
   if (!lower.includes(platform)) return null;
-  // Extract the path segments after the platform domain.
-  // For LinkedIn: https://linkedin.com/in/juan-perez → "in/juan-perez"
-  // For Instagram: https://instagram.com/veganheaven → "veganheaven"
-  // We capture everything after platform.com/ up to the next ? or end.
-  const m = lower.match(new RegExp(`${platform}\\.com/([^?]+)`));
-  if (!m) return null;
-  const path = m[1].replace(/\/$/, "");  // strip trailing slash
-  if (platform === "linkedin") {
-    // LinkedIn paths: /in/<slug>, /pub/<slug>, /company/<slug>
-    // Return the full path so different profiles don't dedup to the same "in"
-    return path;
-  }
-  // For other platforms, return the first path segment
-  const firstSegment = path.split("/")[0];
-  return firstSegment || path;
+  // Extract the path segment after the platform domain
+  const m = lower.match(new RegExp(`${platform}\\.com/([^/?]+)`));
+  return m ? m[1] : null;
 }

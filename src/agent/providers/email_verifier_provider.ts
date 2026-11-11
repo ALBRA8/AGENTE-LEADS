@@ -21,7 +21,6 @@ import type {
   ProviderResult,
 } from "./types.js";
 import { normalizeError } from "../core/errors.js";
-import { assertPublicUrl } from "../core/ssrf_guard.js";
 
 const VERIFIER_BASE = "https://rapid-email-verifier.fly.dev/api/validate";
 
@@ -39,7 +38,7 @@ export class RapidEmailVerificationProvider implements VerificationProvider {
     try {
       const res = await fetch(
         `${VERIFIER_BASE}?email=${encodeURIComponent(email)}`,
-        { headers: { accept: "application/json" }, signal: AbortSignal.timeout(15_000) }
+        { headers: { accept: "application/json" } }
       );
       if (!res.ok) {
         return {
@@ -77,14 +76,13 @@ export class RapidEmailVerificationProvider implements VerificationProvider {
   async verifyDomain(
     domain: string
   ): Promise<ProviderResult<DomainVerificationResult>> {
-    // SSRF guard — reject private IPs / non-http(s) / cloud metadata
-    const urlCheck = assertPublicUrl(`https://${domain}`);
-    if (!urlCheck.ok) return { ok: false, error: urlCheck.error };
+    // Lightweight domain verification: HEAD request over HTTPS.
+    // If the host doesn't resolve or refuses the connection, `fetch`
+    // throws and we normalize to PROVIDER_UNAVAILABLE / TEMPORARY_FAILURE.
     try {
       const res = await fetch(`https://${domain}`, {
         method: "HEAD",
-        redirect: "manual", // don't follow redirects to private IPs
-        signal: AbortSignal.timeout(10_000),
+        redirect: "follow",
       });
       return {
         ok: true,
@@ -103,11 +101,8 @@ export class RapidEmailVerificationProvider implements VerificationProvider {
   async verifyUrl(
     url: string
   ): Promise<ProviderResult<UrlVerificationResult>> {
-    // SSRF guard — reject private IPs / non-http(s) / cloud metadata
-    const urlCheck = assertPublicUrl(url);
-    if (!urlCheck.ok) return { ok: false, error: urlCheck.error };
     try {
-      const res = await fetch(url, { method: "HEAD", redirect: "manual", signal: AbortSignal.timeout(10_000) });
+      const res = await fetch(url, { method: "HEAD", redirect: "follow" });
       return {
         ok: true,
         data: {

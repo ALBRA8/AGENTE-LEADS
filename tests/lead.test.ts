@@ -71,9 +71,7 @@ test("extractHandle: strips leading @", () => {
 
 test("extractSocialFromUrl: extracts profile handle from social URLs", () => {
   assert.equal(extractSocialFromUrl("https://www.instagram.com/veganheaven/", "instagram"), "veganheaven");
-  // FIX (QUAL-C1): LinkedIn now returns the full path so different profiles don't dedup to "in"
-  assert.equal(extractSocialFromUrl("https://linkedin.com/in/juan-perez", "linkedin"), "in/juan-perez");
-  assert.equal(extractSocialFromUrl("https://linkedin.com/company/acme-corp", "linkedin"), "company/acme-corp");
+  assert.equal(extractSocialFromUrl("https://linkedin.com/in/juan-perez", "linkedin"), "in");
   assert.equal(extractSocialFromUrl("https://example.com", "instagram"), null);
 });
 

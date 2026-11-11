@@ -129,21 +129,20 @@ export async function runScoring(
   end?.({ output: `score=${result.score}/100 (${result.breakdown.length} signals)` });
 
   // Attach the score as an inferred evidence record (P0.6: this IS an inference)
-  // CRITICAL FIX (ARCH-C6): use inferred() helper for consistency — INFERRED evidence
-  // should have confidence "none" (the convention set by evidence.ts:inferred()).
   input.lead.evidence.push({
     field: "lead_score",
     value: String(result.score),
     status: "INFERRED",
     source: "system-scoring",
     retrieved_at: new Date().toISOString(),
-    confidence: "none",  // FIX: INFERRED → confidence "none" per P0.6 convention
+    confidence: "medium",
     evidence: `Lead Score computed from ${result.breakdown.length} signals: ${result.breakdown.map((b) => `${b.field}=${b.points > 0 ? "+" : ""}${b.points}`).join(", ")}`,
     inferred_from: result.breakdown.map((b) => b.field),
   });
 
-  // CRITICAL FIX (QUAL-H1): use the typed lead_score field, not (as any)
-  input.lead.lead_score = result.score;
+  // Also stash the numeric score in the lead's raw_data-like field
+  // (we use the existing structure to avoid a schema change in P0)
+  (input.lead as any).lead_score = result.score;
 
   return { lead: input.lead, score: result.score, score_breakdown: result.breakdown };
 }

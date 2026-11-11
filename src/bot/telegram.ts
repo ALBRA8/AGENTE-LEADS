@@ -8,6 +8,7 @@ import path from "path";
 import fs from "fs";
 import { runAgentLoop } from "../agent/loop.js";
 import { upsertUser } from "../database/sqlite.js";
+import { AFFILIATE_PRODUCTS, findProductByQuery, formatProductPitch } from "../agent/affiliate-catalog.js";
 import dotenv from "dotenv";
 import {
   splitMessage,
@@ -20,11 +21,9 @@ dotenv.config({ override: true }); // override: el .env del proyecto gana sobre 
 
 // ── Env validation ─────────────────────────────────────────
 const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
-// FIX (QUAL-C4): catch both placeholder patterns — "AAAAAAAA" and "your_xxx_here"
-if (!BOT_TOKEN || BOT_TOKEN.includes("AAAAAAAA") || BOT_TOKEN.includes("your") || BOT_TOKEN.includes("placeholder")) {
+if (!BOT_TOKEN || BOT_TOKEN.includes("AAAAAAAA")) {
   throw new Error(
-    "[Telegram] TELEGRAM_BOT_TOKEN is missing or still a placeholder. " +
-      "Create a bot via @BotFather and set TELEGRAM_BOT_TOKEN in .env."
+    "[Telegram] TELEGRAM_BOT_TOKEN is missing or still a placeholder."
   );
 }
 
@@ -68,16 +67,45 @@ bot.use(async (ctx: Context, next) => {
   await next();
 });
 
-// ── /start command ─────────────────────────────────────────
+// ── /start command (soporta deep-linking para ofertas de afiliados) ───
 bot.command("start", async (ctx) => {
+  const match = (ctx.match || "").toLowerCase().trim();
+  if (match) {
+    const prod = findProductByQuery(match);
+    if (prod) {
+      await ctx.reply(formatProductPitch(prod), { parse_mode: "Markdown" });
+      return;
+    }
+  }
+
   await ctx.reply(
     `👋 *Hola, soy AGENTE LEADS.*\n\n` +
-      `Sistema de prospección inteligente B2B, impulsado por *GLM 5.3 Flash* vía NVIDIA NIM.\n\n` +
-      `Puedo descubrir, investigar, validar y puntuar leads automáticamente. ` +
-      `Escríbeme en lenguaje natural qué necesitas.\n\n` +
-      `Usa /help para ver los comandos disponibles.`,
+      `Tu agente de IA de élite para gestión de clientes y negocios, impulsado por *Kimi K2.5* vía NVIDIA NIM.\n\n` +
+      `Puedes escribirme cualquier cosa o enviarme una nota de voz.\n` +
+      `Usa */ofertas* para ver el catálogo de herramientas recomendadas con descuento de afiliado.`,
     { parse_mode: "Markdown" }
   );
+});
+
+// ── /ofertas & /catalogo commands – affiliate funnel ───────────
+bot.command(["ofertas", "catalogo", "oferta"], async (ctx) => {
+  const prods = Object.values(AFFILIATE_PRODUCTS);
+  let msg = `💎 *CATÁLOGO DE HERRAMIENTAS Y OFERTAS EXCLUSIVAS*\n\n`;
+  for (const p of prods) {
+    msg += `• *${p.name}* — ${p.dealPrice} (${p.discountPct})\n  🔗 [Ver oferta en JVZoo](${p.affiliateUrl})\n\n`;
+  }
+  msg += `💡 Para ver los detalles completos de una oferta escribe por ejemplo: */adastra* o */spark*.`;
+  await ctx.reply(msg, { parse_mode: "Markdown" });
+});
+
+bot.command("adastra", async (ctx) => {
+  const prod = AFFILIATE_PRODUCTS["adastra"];
+  await ctx.reply(formatProductPitch(prod), { parse_mode: "Markdown" });
+});
+
+bot.command("spark", async (ctx) => {
+  const prod = AFFILIATE_PRODUCTS["spark"];
+  await ctx.reply(formatProductPitch(prod), { parse_mode: "Markdown" });
 });
 
 // ── /clear command – wipe conversation history ─────────────
@@ -127,16 +155,6 @@ bot.command("stats", async (ctx) => {
 bot.command("health", async (ctx) => {
   const h = checkHealth();
   await ctx.reply(formatHealth(h), { parse_mode: "Markdown" });
-});
-
-// ── /doctor command – PRODUCTION CLOSURE §32: full audit ─────
-bot.command("doctor", async (ctx) => {
-  const { runDoctor, formatDoctorReport } = await import("../agent/doctor.js");
-  const report = runDoctor();
-  const text = formatDoctorReport(report);
-  for (const chunk of splitMessage(text)) {
-    await ctx.reply(chunk);
-  }
 });
 
 // ── Text message handler ───────────────────────────────────

@@ -25,15 +25,14 @@
 // P2.4 honors this: no DM bots, no CAPTCHA bypass, no fake accounts.
 // ============================================================
 
-import { nvidiaNIMClient, NVIDIA_CONFIG, withRetry } from "../../config/nvidia.js";
+// FASE 8 (LIPO): use bridge-aware AI
+import { aiChatViaBridgeText } from "../../lib/ai-bridge-adapter.js";
 import type { Lead } from "../core/lead.js";
 import { inferred, type EvidenceRecord } from "../core/evidence.js";
 import type { ExecutionRecorder } from "../core/execution.js";
 import type { EmailOutreachProvider, WhatsAppOutreachProvider, OutreachInput, OutreachResult } from "../providers/outreach.js";
 import { CRMAlbraHooks } from "./crm_albra_hooks.js";
-import { ensureAgentInfraTables } from "../storage/agent_infra.js";
-import { getDb } from "../storage/lead_intelligence.js";
-import { createHash } from "crypto";
+import { makeIdempotencyKey, hasBeenSent, logOutreachSend, ensureAgentInfraTables } from "../storage/agent_infra.js";
 
 export interface OutreachInput_Pipeline {
   leads: Lead[];
@@ -99,6 +98,9 @@ export async function runOutreach(
   const dryRun = input.dry_run !== false;  // safety default: dry run unless explicitly false
   const style = input.style ?? "professional";
 
+  // Ensure infra tables exist (needed for idempotency checks)
+  try { ensureAgentInfraTables(); } catch {}
+
   const end = trace?.start("outreach", {
     intent: `outreach to ${input.leads.length} leads (min score ${minScore}, dry_run=${dryRun})`,
   });
@@ -108,7 +110,7 @@ export async function runOutreach(
   let sent = 0, failed = 0, skipped = 0;
 
   for (const lead of input.leads) {
-    const score = lead.lead_score as number | undefined;
+    const score = (lead as any).lead_score as number | undefined;
 
     // 1. Filter by score — skip if below threshold (no LLM call wasted)
     if (score === undefined || score < minScore) {
@@ -171,28 +173,7 @@ export async function runOutreach(
       continue;
     }
 
-    // 6. IDEMPOTENCY (§25): a retry/restart must never send a duplicate
-    //    message. Key = lead_id + channel + offer hash. If the same lead
-    //    was already sent this exact proposal, skip with a clear reason.
-    const idempotencyKey = buildIdempotencyKey(lead, channel, input.offer_description);
-    if (!dryRun) {
-      ensureAgentInfraTables();
-      const already = getDb()
-        .prepare("SELECT id, message_id FROM outreach_log WHERE idempotency_key = ? AND status = 'sent'")
-        .get(idempotencyKey) as { id: number; message_id: string } | undefined;
-      if (already) {
-        results.push({
-          lead, channel,
-          status: "skipped",
-          skip_reason: `already_sent (idempotency: outreach_log #${already.id}, message ${already.message_id ?? "n/a"})`,
-        });
-        skipped++;
-        skipReasons.set("already_sent_idempotency", (skipReasons.get("already_sent_idempotency") ?? 0) + 1);
-        continue;
-      }
-    }
-
-    // 7. Actually send via the configured provider
+    // 6. Actually send via the configured provider
     const outreachInput: OutreachInput = {
       to: channel === "email" ? lead.email! : lead.phone!,
       subject: `Propuesta para ${lead.name}`,
@@ -200,19 +181,31 @@ export async function runOutreach(
       lead_name: lead.name,
     };
 
+    // §25: Idempotency check — if this lead+channel+offer was already sent, skip
+    const idemKey = makeIdempotencyKey(lead.id ?? lead.name, channel, input.offer_description);
+    let alreadySent = false;
+    if (!dryRun) {
+      try { alreadySent = hasBeenSent(idemKey); } catch { /* DB not ready — skip idempotency */ }
+    }
+    if (alreadySent) {
+      results.push({
+        lead, channel, proposal,
+        status: "skipped",
+        skip_reason: "already_sent (idempotency: this lead+channel+offer was already sent)",
+      });
+      skipped++;
+      skipReasons.set("already_sent_idempotency", (skipReasons.get("already_sent_idempotency") ?? 0) + 1);
+      continue;
+    }
+
     const sendResult = await providerForChannel!.send(outreachInput);
 
     if (sendResult.ok && sendResult.data) {
       sent++;
-
-      // Register in outreach_log for idempotency (§25) — AFTER a real send.
-      ensureAgentInfraTables();
-      getDb()
-        .prepare(
-          "INSERT OR IGNORE INTO outreach_log (idempotency_key, lead_id, channel, message_id, status) VALUES (?, ?, ?, ?, 'sent')"
-        )
-        .run(idempotencyKey, lead.id ?? lead.name, channel, sendResult.data.message_id ?? null);
-
+      // §25: Log to outreach_log for idempotency (NOT in dry_run)
+      if (!dryRun) {
+        try { logOutreachSend(idemKey, lead.id ?? lead.name, channel, sendResult.data.message_id, "sent"); } catch {}
+      }
       // Attach evidence record
       const ev: EvidenceRecord = inferred(
         "outreach_sent",
@@ -246,7 +239,7 @@ export async function runOutreach(
 
   return {
     total_leads: input.leads.length,
-    qualified_leads: input.leads.filter((l) => (l.lead_score ?? 0) >= minScore).length,
+    qualified_leads: input.leads.filter((l) => ((l as any).lead_score ?? 0) >= minScore).length,
     sent, failed, skipped,
     skip_reasons: Array.from(skipReasons.entries()).map(([reason, count]) => ({ reason, count })),
     results,
@@ -267,20 +260,12 @@ async function generateProposal(
   const userMsg = buildProposalPrompt(lead, offerDescription, style);
 
   try {
-    const response = await withRetry(
-      () => nvidiaNIMClient.chat.completions.create({
-        model: NVIDIA_CONFIG.model,
-        messages: [
-          { role: "system", content: SYSTEM_PROMPT.replace("{STYLE}", style) },
-          { role: "user", content: userMsg },
-        ],
-        temperature: 0.5,
-        max_tokens: NVIDIA_CONFIG.maxTokens,
-      }),
-      "proposal generation"
-    );
+    // FASE 8: route through bridge (falls back to direct nvidiaNIMClient)
+    const content = await aiChatViaBridgeText([
+      { role: "system", content: SYSTEM_PROMPT.replace("{STYLE}", style) },
+      { role: "user", content: userMsg },
+    ]);
 
-    const content = response?.choices?.[0]?.message?.content;
     if (!content) {
       end?.({ error: { type: "EMPTY_RESULT", message: "LLM returned no proposal", retryable: false } });
       return "(No se pudo generar la propuesta — LLM returned empty.)";
@@ -302,11 +287,11 @@ function buildProposalPrompt(lead: Lead, offerDescription: string, style: string
   lines.push(`- Name: ${lead.name}`);
   lines.push(`- Username: ${lead.username ?? "n/a"}`);
   lines.push(`- Website: ${lead.website ?? "no encontrado"}`);
-  lines.push(`- Email (validated): ${lead.email && lead.validation?.email?.status === "valid" ? lead.email : "no validado"}`);
+  lines.push(`- Email (validated): ${lead.email && lead.validation?.email?.status === "valid" ? lead.email : "no"}`);
   lines.push(`- Phone: ${lead.phone ?? "no encontrado"}`);
   lines.push(`- Location: ${lead.location ?? "n/a"}`);
   lines.push(`- Niche: ${lead.niche ?? "n/a"}`);
-  lines.push(`- Lead Score: ${lead.lead_score ?? "n/a"}/100`);
+  lines.push(`- Lead Score: ${(lead as any).lead_score ?? "n/a"}/100`);
   lines.push("");
   lines.push(`EVIDENCE (use these for personalization):`);
   for (const e of lead.evidence) {
@@ -326,14 +311,4 @@ function buildProposalPrompt(lead: Lead, offerDescription: string, style: string
   lines.push(`3. Explains how the seller's offer helps`);
   lines.push(`4. Ends with ONE clear call to action`);
   return lines.join("\n");
-}
-
-/**
- * §25 idempotency key — deterministic: lead_id + channel + sha(offer).
- * Same lead + same channel + same offer → same key → the second attempt
- * (retry, restart, duplicate LLM call) is skipped instead of re-sent.
- */
-function buildIdempotencyKey(lead: Lead, channel: string, offer: string): string {
-  const offerHash = createHash("sha1").update(offer ?? "").digest("hex").slice(0, 12);
-  return `ol_${lead.id ?? lead.name}_${channel}_${offerHash}`;
 }

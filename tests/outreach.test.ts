@@ -7,12 +7,12 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { setupTestEnv, cleanupTestEnv } from "./setup.js";
 import { runOutreach } from "../src/agent/pipelines/outreach.js";
 import { MockOutreachProvider } from "../src/agent/providers/outreach.js";
 import { CRMAlbraHooks } from "../src/agent/pipelines/crm_albra_hooks.js";
 import { found, notFound } from "../src/agent/core/evidence.js";
 import type { Lead } from "../src/agent/core/lead.js";
-import { setupTestEnv, cleanupTestEnv } from "./setup.js";
 
 function makeLead(overrides?: Partial<Lead>): Lead {
   return {
@@ -45,7 +45,7 @@ const FAKE_PROPOSAL_GENERATOR = async (lead: Lead, _offer: string, _style: strin
 test("runOutreach: skips leads below min_score", async () => {
   // Lead with score 30 < min_score 50 → skipped
   const lead = makeLead();
-  lead.lead_score = 30;
+  (lead as any).lead_score = 30;
 
   const result = await runOutreach({
     leads: [lead],
@@ -68,8 +68,10 @@ test("runOutreach: skips leads below min_score", async () => {
 });
 
 test("runOutreach: skips leads with no contact channel", async () => {
+  setupTestEnv();
+  try {
   const lead = makeLead({ email: undefined, phone: undefined, validation: {} });
-  lead.lead_score = 70;
+  (lead as any).lead_score = 70;
 
   const result = await runOutreach({
     leads: [lead],
@@ -84,11 +86,12 @@ test("runOutreach: skips leads with no contact channel", async () => {
 
   assert.equal(result.skipped, 1);
   assert.ok(result.results[0].skip_reason!.includes("no_contact_channel"));
+  } finally { cleanupTestEnv(); }
 });
 
 test("runOutreach: dry_run=true generates proposal but doesn't send", async () => {
   const lead = makeLead();
-  lead.lead_score = 70;
+  (lead as any).lead_score = 70;
 
   const result = await runOutreach({
     leads: [lead],
@@ -109,115 +112,107 @@ test("runOutreach: dry_run=true generates proposal but doesn't send", async () =
 test("runOutreach: with email provider configured, sends email for validated email leads", async () => {
   setupTestEnv();
   try {
-    const lead = makeLead();
-    lead.lead_score = 70;
+  const lead = makeLead();
+  (lead as any).lead_score = 70;
 
-    const result = await runOutreach({
-      leads: [lead],
-      min_score: 50,
-      offer_description: "Marketing digital para restaurantes",
-      email_provider: new MockOutreachProvider(),
-      whatsapp_provider: new MockOutreachProvider(),
-      crm_hooks: null,
-      proposal_generator: FAKE_PROPOSAL_GENERATOR,
-      dry_run: false,  // ACTUALLY SEND via mock
-    });
+  const result = await runOutreach({
+    leads: [lead],
+    min_score: 50,
+    offer_description: "Marketing digital para restaurantes",
+    email_provider: new MockOutreachProvider(),
+    whatsapp_provider: new MockOutreachProvider(),
+    crm_hooks: null,
+    proposal_generator: FAKE_PROPOSAL_GENERATOR,
+    dry_run: false,  // ACTUALLY SEND via mock
+  });
 
-    assert.equal(result.sent, 1);
-    assert.equal(result.results[0].status, "sent");
-    assert.equal(result.results[0].channel, "email");
-    assert.ok(result.results[0].message_id);
-  } finally {
-    cleanupTestEnv();
-  }
+  assert.equal(result.sent, 1);
+  assert.equal(result.results[0].status, "sent");
+  assert.equal(result.results[0].channel, "email");
+  assert.ok(result.results[0].message_id);
+  } finally { cleanupTestEnv(); }
 });
 
 test("runOutreach: uses WhatsApp for leads without email but with phone", async () => {
   setupTestEnv();
   try {
-    const lead = makeLead({
-      email: undefined,
-      phone: "+573115678901",
-      validation: {},  // no validated email → fall back to whatsapp
-    });
-    lead.lead_score = 70;
+  const lead = makeLead({
+    email: undefined,
+    phone: "+573115678901",
+    validation: {},  // no validated email → fall back to whatsapp
+  });
+  (lead as any).lead_score = 70;
 
-    const result = await runOutreach({
-      leads: [lead],
-      min_score: 50,
-      offer_description: "Marketing",
-      email_provider: new MockOutreachProvider(),
-      whatsapp_provider: new MockOutreachProvider(),
-      crm_hooks: null,
-      proposal_generator: FAKE_PROPOSAL_GENERATOR,
-      dry_run: false,
-    });
+  const result = await runOutreach({
+    leads: [lead],
+    min_score: 50,
+    offer_description: "Marketing",
+    email_provider: new MockOutreachProvider(),
+    whatsapp_provider: new MockOutreachProvider(),
+    crm_hooks: null,
+    proposal_generator: FAKE_PROPOSAL_GENERATOR,
+    dry_run: false,
+  });
 
-    assert.equal(result.sent, 1);
-    assert.equal(result.results[0].channel, "whatsapp");
-    assert.equal(result.results[0].status, "sent");
-  } finally {
-    cleanupTestEnv();
-  }
+  assert.equal(result.sent, 1);
+  assert.equal(result.results[0].channel, "whatsapp");
+  assert.equal(result.results[0].status, "sent");
+  } finally { cleanupTestEnv(); }
 });
 
 test("runOutreach: attaches outreach_sent evidence to lead", async () => {
   setupTestEnv();
   try {
-    const lead = makeLead();
-    lead.lead_score = 70;
-    const before = lead.evidence.length;
+  const lead = makeLead();
+  (lead as any).lead_score = 70;
+  const before = lead.evidence.length;
 
-    await runOutreach({
-      leads: [lead],
-      min_score: 50,
-      offer_description: "Marketing",
-      email_provider: new MockOutreachProvider(),
-      whatsapp_provider: new MockOutreachProvider(),
-      crm_hooks: null,
-      proposal_generator: FAKE_PROPOSAL_GENERATOR,
-      dry_run: false,
-    });
+  await runOutreach({
+    leads: [lead],
+    min_score: 50,
+    offer_description: "Marketing",
+    email_provider: new MockOutreachProvider(),
+    whatsapp_provider: new MockOutreachProvider(),
+    crm_hooks: null,
+    proposal_generator: FAKE_PROPOSAL_GENERATOR,
+    dry_run: false,
+  });
 
-    const after = lead.evidence.length;
-    assert.ok(after > before, "outreach_sent evidence should be added");
-    const ev = lead.evidence.find((e) => e.field === "outreach_sent");
-    assert.ok(ev);
-    assert.equal(ev!.status, "INFERRED");
-  } finally {
-    cleanupTestEnv();
-  }
+  const after = lead.evidence.length;
+  assert.ok(after > before, "outreach_sent evidence should be added");
+  const ev = lead.evidence.find((e) => e.field === "outreach_sent");
+  assert.ok(ev);
+  assert.equal(ev!.status, "INFERRED");
+  } finally { cleanupTestEnv(); }
 });
 
 test("runOutreach: fires CRM-ALBRA webhook on send (if configured)", async () => {
   setupTestEnv();
   try {
-    const lead = makeLead();
-    lead.lead_score = 70;
+  const lead = makeLead();
+  (lead as any).lead_score = 70;
 
-    const crmHooks = new CRMAlbraHooks({
-      webhook_url: "http://127.0.0.1:1/crm-hook",  // port 1 = instant connection refused
-      enabled: true,
-    });
+  const crmHooks = new CRMAlbraHooks({
+    webhook_url: "http://127.0.0.1:1/crm-hook",  // port 1 = instant connection refused
+    enabled: true,
+  });
 
-    const result = await runOutreach({
-      leads: [lead],
-      min_score: 50,
-      offer_description: "Marketing",
-      email_provider: new MockOutreachProvider(),
-      whatsapp_provider: new MockOutreachProvider(),
-      crm_hooks: crmHooks,
-      proposal_generator: FAKE_PROPOSAL_GENERATOR,
-      dry_run: false,
-    });
+  const result = await runOutreach({
+    leads: [lead],
+    min_score: 50,
+    offer_description: "Marketing",
+    email_provider: new MockOutreachProvider(),
+    whatsapp_provider: new MockOutreachProvider(),
+    crm_hooks: crmHooks,
+    proposal_generator: FAKE_PROPOSAL_GENERATOR,
+    dry_run: false,
+  });
 
-    assert.equal(result.sent, 1);
-    // CRM hook stats: 1 attempt (may or may not have succeeded due to invalid URL)
-    const stats = crmHooks.getStats();
-    assert.ok(stats.sent + stats.failed >= 1, "CRM hook should have been attempted");
-  } finally {
-    cleanupTestEnv();
-  }
+  assert.equal(result.sent, 1);
+  // CRM hook stats: 1 attempt (may or may not have succeeded due to invalid URL)
+  const stats = crmHooks.getStats();
+  assert.ok(stats.sent + stats.failed >= 1, "CRM hook should have been attempted");
+  } finally { cleanupTestEnv(); }
 });
 
 // ── CRM-ALBRA hooks (P2.3) ────────────────────────────────
@@ -234,8 +229,7 @@ test("CRMAlbraHooks: isConfigured returns true with webhook_url + enabled", () =
 
 test("CRMAlbraHooks: fire() returns delivered=false when not configured", async () => {
   const h = new CRMAlbraHooks({});
-  // §26 contractual envelope via buildEvent (fire() short-circuits unconfigured)
-  const r = await h.fire(h.buildEvent("lead.created", {}));
+  const r = await h.fire({ type: "lead.created", payload: {}, fired_at: new Date().toISOString() });
   assert.equal(r.ok, true);
   assert.equal(r.data!.delivered, false);
 });

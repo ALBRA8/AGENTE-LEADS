@@ -16,8 +16,6 @@
 // ============================================================
 
 import type { ExecutionTrace } from "../core/execution.js";
-import { ensureAgentInfraTables } from "../storage/agent_infra.js";
-import { getDb } from "../storage/lead_intelligence.js";
 
 export interface ProviderMetric {
   provider: string;
@@ -100,70 +98,51 @@ export function formatProviderMetrics(metrics: ProviderMetric[]): string {
   return lines.join("\n");
 }
 
-// ── §14 — Persistence + degradation detection ──────────────────
+// ── PRODUCTION CLOSURE §14: Persistence + Degradation ────
+import { getDb } from "../storage/lead_intelligence.js";
+import { ensureAgentInfraTables } from "../storage/agent_infra.js";
 
-/**
- * Persist the metrics of a completed trace into provider_metrics
- * (historical analysis). usable_results = steps that produced output.
- */
-export function persistProviderMetrics(trace: ExecutionTrace, metrics?: ProviderMetric[]): void {
+/** Persist provider metrics to the provider_metrics table (§14) */
+export function persistProviderMetrics(trace: ExecutionTrace): void {
   ensureAgentInfraTables();
-  const computed = metrics ?? computeProviderMetrics(trace);
-  const stmt = getDb().prepare(`
-    INSERT INTO provider_metrics
-      (provider, execution_id, requests, success_rate, failure_rate, avg_latency_ms, usable_results, failure_breakdown)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+  const metrics = computeProviderMetrics(trace);
+  const db = getDb();
+  const stmt = db.prepare(`
+    INSERT INTO provider_metrics (provider, execution_id, requests, success_rate, failure_rate, avg_latency_ms, usable_results, failure_breakdown, recorded_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
-  for (const m of computed) {
+  for (const m of metrics) {
+    const failureRate = m.total_calls > 0 ? (m.failed_calls / m.total_calls) : 0;
     stmt.run(
       m.provider,
       trace.id,
       m.total_calls,
       m.success_rate,
-      100 - m.success_rate,
+      failureRate,
       m.avg_latency_ms,
-      trace.steps.filter((s) => s.provider === m.provider && s.status === "ok" && s.output).length,
-      JSON.stringify(m.failure_breakdown)
+      m.successful_calls,
+      JSON.stringify(m.failure_breakdown),
+      new Date().toISOString()
     );
   }
 }
 
-export interface ProviderDegradation {
-  provider: string;
-  window_requests: number;
-  window_success_rate: number;
-  degraded: boolean;
-}
-
-/**
- * Decide whether a provider is degraded over its recent history.
- * Deterministic rule: weighted success_rate < threshold on the last N records.
- */
-export function isProviderDegraded(
-  provider: string,
-  opts: { window?: number; threshold?: number } = {}
-): ProviderDegradation {
+/** Check if a provider is degraded (success rate below 50% in recent calls) */
+export function isProviderDegraded(providerName: string): { degraded: boolean; window_requests: number; avg_success_rate: number } {
   ensureAgentInfraTables();
-  const window = opts.window ?? 10;
-  const threshold = opts.threshold ?? 50; // %
-  const rows = getDb()
-    .prepare(
-      "SELECT success_rate, requests FROM provider_metrics WHERE provider = ? ORDER BY recorded_at DESC, id DESC LIMIT ?"
-    )
-    .all(provider, window) as { success_rate: number; requests: number }[];
-
-  if (rows.length === 0) {
-    return { provider, window_requests: 0, window_success_rate: 100, degraded: false };
-  }
-  const totalRequests = rows.reduce((s, r) => s + r.requests, 0);
-  const weighted =
-    totalRequests > 0
-      ? rows.reduce((s, r) => s + r.success_rate * r.requests, 0) / totalRequests
-      : rows.reduce((s, r) => s + r.success_rate, 0) / rows.length;
+  const db = getDb();
+  const rows = db.prepare(`
+    SELECT requests, success_rate FROM provider_metrics
+    WHERE provider = ?
+    ORDER BY recorded_at DESC
+    LIMIT 10
+  `).all(providerName) as any[];
+  if (rows.length === 0) return { degraded: false, window_requests: 0, avg_success_rate: 0 };
+  const totalRequests = rows.reduce((s, r) => s + (r.requests || 0), 0);
+  const avgRate = rows.reduce((s, r) => s + (r.success_rate || 0), 0) / rows.length;
   return {
-    provider,
+    degraded: avgRate < 50,
     window_requests: totalRequests,
-    window_success_rate: Math.round(weighted * 100) / 100,
-    degraded: weighted < threshold,
+    avg_success_rate: Math.round(avgRate * 100) / 100,
   };
 }
