@@ -283,7 +283,7 @@ export function Dashboard() {
                     </div>
                     {s.keywords && (
                       <div className="text-xs text-muted-foreground truncate">
-                        "{s.keywords}"
+                        &quot;{s.keywords}&quot;
                       </div>
                     )}
                   </div>

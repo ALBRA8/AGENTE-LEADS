@@ -59,8 +59,8 @@ function buildOverpassQuery(
   category?: string,
   keywords?: string
 ): string {
-  // Map common service categories to OSM tags
-  const tagMap: Record<string, string[]> = [
+  // Map common service categories to OSM tags (lista de tuplas [disparador, tags])
+  const tagMap: [string, string[]][] = [
     ["clínica", ['["amenity"="clinic"]', '["healthcare"="clinic"]', '["healthcare"="doctor"]']],
     ["clinic", ['["amenity"="clinic"]', '["healthcare"="clinic"]']],
     ["estética", ['["amenity"="clinic"]', '["healthcare"="clinic"]', '["beauty"="yes"]']],

@@ -1147,54 +1147,67 @@ function Row({ label, value }: { label: string; value: React.ReactNode }) {
 
 function TechStackBadge({ data }: { data?: string | null }) {
   if (!data) return <span className="text-[11px] text-muted-foreground">—</span>;
+  // El try solo envuelve el parseo: el JSX se construye FUERA del try/catch
+  // (React no puede capturar errores de render con try/catch).
+  let parsed: { cms?: string; isDiySite?: boolean; isProSite?: boolean } | undefined;
+  let invalido = false;
   try {
-    const parsed = JSON.parse(data);
-    if (!parsed?.cms) {
-      return <span className="text-[11px] text-muted-foreground">no detectado</span>;
-    }
-    const labels: Record<string, { label: string; color: string }> = {
-      wordpress: { label: "WordPress", color: "bg-blue-100 text-blue-700 dark:bg-blue-950 dark:text-blue-300" },
-      shopify: { label: "Shopify", color: "bg-green-100 text-green-700 dark:bg-green-950 dark:text-green-300" },
-      wix: { label: "Wix", color: "bg-purple-100 text-purple-700 dark:bg-purple-950 dark:text-purple-300" },
-      squarespace: { label: "Squarespace", color: "bg-slate-200 text-slate-700 dark:bg-slate-800 dark:text-slate-300" },
-      webflow: { label: "Webflow", color: "bg-indigo-100 text-indigo-700 dark:bg-indigo-950 dark:text-indigo-300" },
-      custom_next: { label: "Next.js", color: "bg-zinc-200 text-zinc-700 dark:bg-zinc-800 dark:text-zinc-300" },
-      custom_nuxt: { label: "Nuxt", color: "bg-emerald-100 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-300" },
-      drupal: { label: "Drupal", color: "bg-cyan-100 text-cyan-700 dark:bg-cyan-950 dark:text-cyan-300" },
-      joomla: { label: "Joomla", color: "bg-orange-100 text-orange-700 dark:bg-orange-950 dark:text-orange-300" },
-      ghost: { label: "Ghost", color: "bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300" },
-    };
-    const meta = labels[parsed.cms] || { label: parsed.cms, color: "bg-muted text-muted-foreground" };
-    return (
-      <span className={`inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium ${meta.color}`}>
-        {meta.label}
-        {parsed.isDiySite && " ·DIY"}
-        {parsed.isProSite && " ·PRO"}
-      </span>
-    );
+    parsed = JSON.parse(data);
   } catch {
+    invalido = true;
+  }
+  if (invalido) {
     return <span className="text-[11px] text-muted-foreground">—</span>;
   }
+  if (!parsed?.cms) {
+    return <span className="text-[11px] text-muted-foreground">no detectado</span>;
+  }
+  const labels: Record<string, { label: string; color: string }> = {
+    wordpress: { label: "WordPress", color: "bg-blue-100 text-blue-700 dark:bg-blue-950 dark:text-blue-300" },
+    shopify: { label: "Shopify", color: "bg-green-100 text-green-700 dark:bg-green-950 dark:text-green-300" },
+    wix: { label: "Wix", color: "bg-purple-100 text-purple-700 dark:bg-purple-950 dark:text-purple-300" },
+    squarespace: { label: "Squarespace", color: "bg-slate-200 text-slate-700 dark:bg-slate-800 dark:text-slate-300" },
+    webflow: { label: "Webflow", color: "bg-indigo-100 text-indigo-700 dark:bg-indigo-950 dark:text-indigo-300" },
+    custom_next: { label: "Next.js", color: "bg-zinc-200 text-zinc-700 dark:bg-zinc-800 dark:text-zinc-300" },
+    custom_nuxt: { label: "Nuxt", color: "bg-emerald-100 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-300" },
+    drupal: { label: "Drupal", color: "bg-cyan-100 text-cyan-700 dark:bg-cyan-950 dark:text-cyan-300" },
+    joomla: { label: "Joomla", color: "bg-orange-100 text-orange-700 dark:bg-orange-950 dark:text-orange-300" },
+    ghost: { label: "Ghost", color: "bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300" },
+  };
+  const meta = labels[parsed.cms] || { label: parsed.cms, color: "bg-muted text-muted-foreground" };
+  return (
+    <span className={`inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium ${meta.color}`}>
+      {meta.label}
+      {parsed.isDiySite && " ·DIY"}
+      {parsed.isProSite && " ·PRO"}
+    </span>
+  );
 }
 
 function FreshnessBadge({ data }: { data?: string | null }) {
   if (!data) return <span className="text-[11px] text-muted-foreground">—</span>;
+  // El try solo envuelve el parseo: el JSX se construye FUERA del try/catch.
+  let parsed: { freshnessScore?: number; daysSinceLastUpdate?: number } | undefined;
+  let invalido = false;
   try {
-    const parsed = JSON.parse(data);
-    const score = parsed?.freshnessScore;
-    if (typeof score !== "number") {
-      return <span className="text-[11px] text-muted-foreground">—</span>;
-    }
-    let color = "bg-emerald-100 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-300";
-    if (score < 30) color = "bg-red-100 text-red-700 dark:bg-red-950 dark:text-red-300";
-    else if (score < 60) color = "bg-amber-100 text-amber-700 dark:bg-amber-950 dark:text-amber-300";
-    return (
-      <span className={`inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium ${color}`}>
-        {score}/100
-        {parsed.daysSinceLastUpdate != null && parsed.daysSinceLastUpdate > 365 && ` ·${Math.round(parsed.daysSinceLastUpdate / 365)}y`}
-      </span>
-    );
+    parsed = JSON.parse(data);
   } catch {
+    invalido = true;
+  }
+  if (invalido || !parsed) {
     return <span className="text-[11px] text-muted-foreground">—</span>;
   }
+  const score = parsed.freshnessScore;
+  if (typeof score !== "number") {
+    return <span className="text-[11px] text-muted-foreground">—</span>;
+  }
+  let color = "bg-emerald-100 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-300";
+  if (score < 30) color = "bg-red-100 text-red-700 dark:bg-red-950 dark:text-red-300";
+  else if (score < 60) color = "bg-amber-100 text-amber-700 dark:bg-amber-950 dark:text-amber-300";
+  return (
+    <span className={`inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium ${color}`}>
+      {score}/100
+      {parsed.daysSinceLastUpdate != null && parsed.daysSinceLastUpdate > 365 && ` ·${Math.round(parsed.daysSinceLastUpdate / 365)}y`}
+    </span>
+  );
 }
