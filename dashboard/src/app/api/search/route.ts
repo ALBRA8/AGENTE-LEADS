@@ -21,6 +21,7 @@ import { expandQueries } from "@/lib/leads/query-expander";
 import { computeLookAlikeScore } from "@/lib/ai/closed-loop";
 import { scoreLead } from "@/lib/ai/scoring";
 import { generateIntelligence } from "@/lib/ai/intelligence";
+import { dedupProspects, matchExistingProspect } from "@/lib/leads/dedup";
 
 // Allow up to 5 minutes (expanded searches can take a while)
 export const maxDuration = 300;
@@ -110,8 +111,12 @@ export async function POST(req: NextRequest) {
     }
 
     // ── STEP 2: Run adapter for each (expanded) query, dedup results ──
-    const allRawProspects: any[] = [];
-    const seen = new Set<string>();
+    // Se acumulan los resultados crudos de todas las queries/proveedores y
+    // luego se deduplican con el módulo canónico multi-señal: solo se
+    // fusionan negocios con señal EXACT o STRONG y SIN conflicto de
+    // website/teléfono. El sobreviviente de cada grupo es determinista
+    // (más completo; desempate lexicográfico), NO el primero que llegó.
+    const rawResults: any[] = [];
     for (const q of expanded.slice(0, 25)) {
       // For expanded queries we pass keywords=q so the adapter searches for it
       const adapterInput = shouldExpand
@@ -119,19 +124,20 @@ export async function POST(req: NextRequest) {
         : { city, country, category, keywords, radius, offerDescription: offer?.description };
       try {
         const results = await adapter.search(adapterInput);
-        for (const r of results) {
-          const key = `${r.name}|${r.city}`;
-          if (seen.has(key)) continue;
-          seen.add(key);
-          allRawProspects.push(r);
-        }
+        rawResults.push(...results);
       } catch (e: any) {
         console.warn(`[search] adapter failed for query "${q}":`, e.message);
       }
       if (!shouldExpand) break; // single-query mode
     }
+    const { unique: allRawProspects, duplicatesRemoved } = dedupProspects(rawResults);
+    if (duplicatesRemoved > 0) {
+      console.log(
+        `[search] dedup: ${duplicatesRemoved} duplicados fusionados de ${rawResults.length} resultados`
+      );
+    }
 
-    // ── STEP 3: Persist prospects (dedup by name+city in DB) ────
+    // ── STEP 3: Persist prospects (dedup multi-señal contra la BD) ─────
     let tierA = 0,
       tierB = 0,
       tierC = 0,
@@ -141,9 +147,20 @@ export async function POST(req: NextRequest) {
     const newSaved: any[] = []; // track new ones that need enrichment
 
     for (const rp of allRawProspects) {
-      const existing = await db.prospect.findFirst({
-        where: { userId: user.id, name: rp.name, city: rp.city },
+      // Candidatos por identificadores fuertes (website/phone) o nombre
+      // exacto. La decisión final se toma en JS con normalización y
+      // detección de conflictos: coincidir en la consulta NO basta. Si solo
+      // coincide por nombre y hay conflicto de website/teléfono → no se
+      // fusiona (registro nuevo); sin conflicto → se reutiliza el existente
+      // SIN sobreescribirlo (compatibilidad con registros ya creados).
+      const orClauses: any[] = [{ name: rp.name }];
+      if (rp.website) orClauses.push({ website: rp.website });
+      if (rp.phone) orClauses.push({ phone: rp.phone });
+      const dbCandidates = await db.prospect.findMany({
+        where: { userId: user.id, OR: orClauses },
+        take: 50,
       });
+      const existing = matchExistingProspect<any>(rp, dbCandidates);
       if (existing) {
         savedProspectIds.push(existing.id);
         if (existing.tier === "TIER_A") tierA++;

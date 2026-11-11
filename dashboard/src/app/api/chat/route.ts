@@ -8,6 +8,7 @@ import { requireUser } from "@/lib/server";
 import { db } from "@/lib/db";
 import { getNvidiaClient, AI_MODEL, type ChatMessage } from "@/lib/ai/client";
 import { getLeadSources } from "@/lib/leads";
+import { matchExistingProspect } from "@/lib/leads/dedup";
 import { qualifyProspect } from "@/lib/ai/qualification";
 import { scoreLead } from "@/lib/ai/scoring";
 
@@ -160,7 +161,19 @@ async function execPipeline(args: any, userId: string): Promise<string> {
     const ids: string[] = [];
 
     for (const rp of raw) {
-      const ex = await db.prospect.findFirst({ where: { userId, name: rp.name, city: rp.city } });
+      // Dedup multi-señal: candidatos por identificadores fuertes o nombre
+      // exacto; la decisión final (normalización + conflictos) se toma en JS.
+      // Si solo coincide por nombre con conflicto de website/teléfono →
+      // registro nuevo. Si fusiona, el existente se reutiliza SIN
+      // sobreescribirlo (compatibilidad con registros ya creados).
+      const orClauses: any[] = [{ name: rp.name }];
+      if (rp.website) orClauses.push({ website: rp.website });
+      if (rp.phone) orClauses.push({ phone: rp.phone });
+      const candidates = await db.prospect.findMany({
+        where: { userId, OR: orClauses },
+        take: 50,
+      });
+      const ex = matchExistingProspect<any>(rp, candidates);
       if (ex) { ids.push(ex.id); continue; }
       const c = await db.prospect.create({
         data: {

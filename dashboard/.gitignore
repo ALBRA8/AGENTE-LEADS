@@ -1,0 +1,4 @@
+
+# artefactos locales de build/ts
+tsconfig.tsbuildinfo
+next-env.d.ts
