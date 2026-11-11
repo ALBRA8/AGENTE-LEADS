@@ -19,6 +19,7 @@ import { verifyEmail } from "./tools/verify_email.js";
 import { saveLead } from "./tools/save_lead.js";
 import { enrichLeadProfile } from "./tools/enrich_lead_profile.js";
 import { scrapeStealth } from "./tools/scrape_stealth.js";
+import { readDocument } from "./tools/read_document.js";
 import { runLeadPipelineTool } from "./tools/run_lead_pipeline.js";
 import { runOutreachTool } from "./tools/run_outreach.js";
 
@@ -42,6 +43,8 @@ const TOOL_REGISTRY: Tool[] = [
   // ── V2 orchestrator tools (P0.9 + P2.4) ────────────────────────
   contractTool(runLeadPipelineTool),
   contractTool(runOutreachTool),
+  // ── Lectura de documentos (PDF/DOCX por URL o ruta local) ──────────
+  contractTool(readDocument),
   // ── Legacy tools (kept for backward compatibility) ────────────────
   contractTool(scrapeInstagramLeads),
   contractTool(verifyEmail),

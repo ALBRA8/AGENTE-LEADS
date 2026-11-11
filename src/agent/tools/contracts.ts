@@ -174,4 +174,31 @@ export const CONTRACTS: Record<string, ToolContract> = {
     evidence_behavior: "ninguno — almacenamiento crudo legacy",
     audit_behavior: "invocación registrada en tool_audit",
   },
+
+  read_document: {
+    id: "tool.read_document",
+    name: "read_document",
+    purpose:
+      "Descargar y extraer el texto de un documento PDF o Word (.docx) por URL http(s) o por ruta local, " +
+      "para que el agente pueda leer documentos que encuentra en internet (catálogos, precios, dossiers, normativa).",
+    input_schema: {
+      type: "object",
+      properties: { url: { type: "string" }, path: { type: "string" } },
+      // url y path son excluyentes: exactamente uno (lo valida la tool).
+      required: [],
+    },
+    output_schema: {
+      type: "string (JSON { ok, kind: \"pdf\"|\"docx\", pages?, chars, text (max 12000), truncated })",
+    },
+    permissions: ["READ", "EXTERNAL"],
+    risk: "low",
+    side_effects: [
+      "Descarga documentos de hasta 15 MB (timeout de descarga 20 s); no escribe estado local",
+    ],
+    timeout_ms: 60_000,
+    retry_policy: { max_attempts: 1, backoff: "none" },
+    evidence_behavior: "texto crudo del documento; el pipeline lo convierte en evidencia",
+    audit_behavior: "tool_audit + SSRF guard registra rechazos",
+    url_args: ["url"],
+  },
 };

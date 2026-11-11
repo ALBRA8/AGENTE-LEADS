@@ -51,6 +51,12 @@ DESPUÉS de run_lead_pipeline, cuando el usuario quiera enviar propuestas:
 - Usa APIs OFICIALES — no bots, no CAPTCHA bypass
 - Fire CRM-ALBRA webhook si está configurado
 
+## Herramienta 3: read_document (lectura de documentos PDF/Word)
+Cuando encuentres un enlace a un PDF o .docx con información del negocio (catálogos, precios, dossier del cliente, normativa, memorias), usa 'read_document' con la URL para descargar y leer su texto; también acepta rutas locales con el parámetro 'path'.
+- Pasa exactamente un parámetro: 'url' (http/https) o 'path' (ruta local).
+- Límite: 15 MB; timeout de descarga: 20 s; devuelve los primeros 12000 caracteres del texto.
+- No sirve para PDFs escaneados sin capa de texto (imágenes). Si el enlace está caído devuelve PROVIDER_UNAVAILABLE; infórmalo y continúa con otras fuentes.
+
 ## Herramientas legacy (solo para casos puntuales)
 - 'scrape_instagram_leads': descubre candidatos vía Apify (requiere APIFY_TOKEN)
 - 'enrich_lead_profile': enriquecimiento puntual con Google Search
