@@ -1,31 +1,60 @@
 "use client";
+
 import { useState, useEffect } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { Plus, Save, Trash2, Loader2, KeyRound, Webhook, MessageCircle, MapPin, Send } from "lucide-react";
+import {
+  Save,
+  Loader2,
+  Cpu,
+  MessageCircle,
+  QrCode,
+  RefreshCw,
+  CheckCircle2,
+  AlertCircle,
+  Briefcase,
+  KeyRound,
+  Send,
+  Webhook,
+  MapPin,
+  Bot,
+} from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { Separator } from "@/components/ui/separator";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { toast } from "sonner";
 
 export function SettingsClient() {
   const qc = useQueryClient();
-  const { data: offersData, isLoading } = useQuery({
+
+  // 1. Proveedor IA
+  const [providerForm, setProviderForm] = useState({
+    provider: "nvidia",
+    base_url: "https://integrate.api.nvidia.com/v1",
+    model: "z-ai/glm-5.3-flash",
+    api_key: "",
+    temperature: 0.6,
+    top_p: 0.7,
+  });
+  const [testingProvider, setTestingProvider] = useState(false);
+  const [savingProvider, setSavingProvider] = useState(false);
+
+  // 2. WhatsApp Daemon
+  const [waStatus, setWaStatus] = useState<any>({ status: "checking" });
+  const [waQr, setWaQr] = useState<string | null>(null);
+  const [loadingWa, setLoadingWa] = useState(false);
+
+  // 3. Ofertas de Negocio
+  const { data: offersData } = useQuery({
     queryKey: ["offers"],
     queryFn: async () => (await fetch("/api/offers")).json(),
   });
   const offers = offersData?.offers || [];
-
-  const { data: integData } = useQuery({
-    queryKey: ["integrations"],
-    queryFn: async () => (await fetch("/api/integrations")).json(),
-  });
-
   const [editingId, setEditingId] = useState<string | null>(null);
-  const [form, setForm] = useState<any>({
+  const [offerForm, setOfferForm] = useState<any>({
     name: "",
     description: "",
     priceRange: "",
@@ -37,11 +66,39 @@ export function SettingsClient() {
     sector: "",
   });
 
+  // 4. APIs e Integraciones de Comunicación / Scraping
+  const { data: integData } = useQuery({
+    queryKey: ["integrations"],
+    queryFn: async () => (await fetch("/api/integrations")).json(),
+  });
+  const [integForm, setIntegForm] = useState({
+    telegramBotToken: "",
+    telegramAllowedIds: "",
+    sendgridApiKey: "",
+    sendgridFromEmail: "",
+    apifyToken: "",
+    googlePlacesApiKey: "",
+    whatsappToken: "",
+    whatsappPhoneId: "",
+  });
+
+  useEffect(() => {
+    // Cargar config IA
+    fetch("/api/provider-settings")
+      .then((res) => res.json())
+      .then((data) => {
+        if (data && !data.error) setProviderForm((prev) => ({ ...prev, ...data }));
+      })
+      .catch(() => {});
+
+    // Comprobar WhatsApp
+    checkWhatsApp();
+  }, []);
+
   useEffect(() => {
     if (offers.length > 0 && !editingId) {
       const o = offers[0];
-      // eslint-disable-next-line react-hooks/set-state-in-effect
-      setForm({
+      setOfferForm({
         name: o.name || "",
         description: o.description || "",
         priceRange: o.priceRange || "",
@@ -56,96 +113,135 @@ export function SettingsClient() {
     }
   }, [offers, editingId]);
 
+  useEffect(() => {
+    if (integData?.integration) {
+      setIntegForm({
+        telegramBotToken: integData.integration.telegramBotToken || "",
+        telegramAllowedIds: integData.integration.telegramAllowedIds || "",
+        sendgridApiKey: integData.integration.sendgridApiKey || "",
+        sendgridFromEmail: integData.integration.sendgridFromEmail || "",
+        apifyToken: integData.integration.apifyToken || "",
+        googlePlacesApiKey: integData.integration.googlePlacesApiKey || "",
+        whatsappToken: integData.integration.whatsappToken || "",
+        whatsappPhoneId: integData.integration.whatsappPhoneId || "",
+      });
+    }
+  }, [integData]);
+
+  // Handlers Proveedor IA
+  const handleSaveProvider = async () => {
+    setSavingProvider(true);
+    try {
+      const res = await fetch("/api/provider-settings", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(providerForm),
+      });
+      const data = await res.json();
+      if (data.ok) toast.success("Configuración de IA guardada");
+      else toast.error("Error al guardar: " + data.error);
+    } catch {
+      toast.error("Error de conexión al guardar");
+    } finally {
+      setSavingProvider(false);
+    }
+  };
+
+  const handleTestProvider = async () => {
+    setTestingProvider(true);
+    try {
+      const res = await fetch("/api/provider-settings/test", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(providerForm),
+      });
+      const data = await res.json();
+      if (data.ok) toast.success(`Conexión exitosa (${data.latency_ms} ms)`);
+      else toast.error(data.message || "Error al conectar con el proveedor");
+    } catch {
+      toast.error("Fallo la llamada de prueba");
+    } finally {
+      setTestingProvider(false);
+    }
+  };
+
+  // Handlers WhatsApp
+  const checkWhatsApp = async () => {
+    setLoadingWa(true);
+    try {
+      const res = await fetch("/api/whatsapp/daemon-proxy?path=/status");
+      const data = await res.json();
+      setWaStatus(data);
+      if (data.status === "linking" || data.qr) {
+        const qrRes = await fetch("/api/whatsapp/daemon-proxy?path=/qr");
+        const qrData = await qrRes.json();
+        setWaQr(qrData.qr || null);
+      } else {
+        setWaQr(null);
+      }
+    } catch {
+      setWaStatus({ status: "daemon_offline" });
+      setWaQr(null);
+    } finally {
+      setLoadingWa(false);
+    }
+  };
+
+  const handleWaConnect = async () => {
+    try {
+      await fetch("/api/whatsapp/daemon-proxy", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ path: "/connect" }),
+      });
+      toast.info("Iniciando conexión WhatsApp...");
+      setTimeout(checkWhatsApp, 2000);
+    } catch {
+      toast.error("No se pudo iniciar conexión");
+    }
+  };
+
+  const handleWaDisconnect = async () => {
+    try {
+      await fetch("/api/whatsapp/daemon-proxy", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ path: "/disconnect" }),
+      });
+      toast.success("Sesión cerrada");
+      checkWhatsApp();
+    } catch {
+      toast.error("Error al desconectar");
+    }
+  };
+
+  // Handlers Ofertas
   const saveOffer = useMutation({
     mutationFn: async () => {
       if (editingId) {
         const r = await fetch("/api/offers", {
           method: "PATCH",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ id: editingId, ...form }),
+          body: JSON.stringify({ id: editingId, ...offerForm }),
         });
         return r.json();
       } else {
         const r = await fetch("/api/offers", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(form),
+          body: JSON.stringify(offerForm),
         });
         return r.json();
       }
     },
-    onSuccess: () => {
+    onSuccess: (data) => {
       qc.invalidateQueries({ queryKey: ["offers"] });
-      toast.success("Oferta guardada");
-    },
-    onError: (e: any) => toast.error(e.message),
-  });
-
-  const deleteOffer = useMutation({
-    mutationFn: async (id: string) => {
-      await fetch(`/api/offers?id=${id}`, { method: "DELETE" });
-    },
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["offers"] });
-      toast.success("Oferta eliminada");
-      setEditingId(null);
-      setForm({
-        name: "",
-        description: "",
-        priceRange: "",
-        idealCustomer: "",
-        targetNiches: "",
-        cities: "",
-        countries: "",
-        budget: "",
-        sector: "",
-      });
+      toast.success("Oferta guardada exitosamente");
+      if (data?.offer?.id) setEditingId(data.offer.id);
     },
   });
 
-  const newOffer = () => {
-    setEditingId(null);
-    setForm({
-      name: "",
-      description: "",
-      priceRange: "",
-      idealCustomer: "",
-      targetNiches: "",
-      cities: "",
-      countries: "",
-      budget: "",
-      sector: "",
-    });
-  };
-
-  // Integrations
-  const [integForm, setIntegForm] = useState<any>({
-    telegramBotToken: "",
-    telegramAllowedIds: "",
-    sendgridApiKey: "",
-    sendgridFromEmail: "",
-    whatsappToken: "",
-    whatsappPhoneId: "",
-    googlePlacesApiKey: "",
-    apifyToken: "",
-  });
-
-  useEffect(() => {
-    if (integData?.integration) {
-      // eslint-disable-next-line react-hooks/set-state-in-effect
-      setIntegForm({
-        telegramBotToken: integData.integration.telegramBotToken || "",
-        telegramAllowedIds: integData.integration.telegramAllowedIds || "",
-        sendgridApiKey: integData.integration.sendgridApiKey || "",
-        sendgridFromEmail: integData.integration.sendgridFromEmail || "",
-        whatsappToken: integData.integration.whatsappToken || "",
-        whatsappPhoneId: integData.integration.whatsappPhoneId || "",
-        googlePlacesApiKey: integData.integration.googlePlacesApiKey || "",
-        apifyToken: integData.integration.apifyToken || "",
-      });
-    }
-  }, [integData]);
-
+  // Handlers Integraciones
   const saveIntegration = useMutation({
     mutationFn: async () => {
       await fetch("/api/integrations", {
@@ -156,427 +252,396 @@ export function SettingsClient() {
     },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["integrations"] });
-      toast.success("Integraciones guardadas");
+      toast.success("APIs e integraciones guardadas");
     },
   });
-
-  const configured = integData?.configured || {};
 
   return (
     <div className="max-w-4xl mx-auto space-y-6">
       <div>
-        <h1 className="text-3xl font-bold tracking-tight">Ajustes</h1>
+        <h1 className="text-3xl font-bold tracking-tight">Ajustes del Sistema</h1>
         <p className="text-sm text-muted-foreground mt-1">
-          Configura tu oferta comercial y las integraciones externas
+          Configura el cerebro de IA, WhatsApp, APIs de prospección y ofertas comerciales
         </p>
       </div>
 
-      {/* Offer selector */}
-      <Card>
-        <CardHeader>
-          <div className="flex items-center justify-between">
-            <div>
-              <CardTitle>Mi oferta comercial</CardTitle>
-              <CardDescription>
-                Define qué vendes y a quién. Esto alimenta la calificación de
-                prospectos y la generación de propuestas.
-              </CardDescription>
-            </div>
-            <Button variant="outline" size="sm" onClick={newOffer}>
-              <Plus className="h-4 w-4 mr-1" /> Nueva oferta
-            </Button>
-          </div>
-          {offers.length > 0 && (
-            <div className="flex flex-wrap gap-2 mt-3">
-              {offers.map((o: any) => (
-                <button
-                  key={o.id}
-                  onClick={() => setEditingId(o.id)}
-                  className={`text-xs px-3 py-1.5 rounded border-2 ${
-                    editingId === o.id
-                      ? "border-primary bg-primary/5"
-                      : "border-border"
-                  }`}
-                >
-                  {o.name}
-                </button>
-              ))}
-            </div>
-          )}
-        </CardHeader>
-        <CardContent>
-          {isLoading ? (
-            <div className="space-y-3">
-              <Skeleton className="h-9 w-full" />
-              <Skeleton className="h-20 w-full" />
-            </div>
-          ) : (
-            <div className="space-y-4">
-              <div>
-                <Label htmlFor="name">Nombre de la oferta *</Label>
-                <Input
-                  id="name"
-                  value={form.name}
-                  onChange={(e) => setForm({ ...form, name: e.target.value })}
-                  placeholder="Marketing digital para clínicas de estética"
-                />
+      <Tabs defaultValue="ai" className="space-y-4">
+        <TabsList className="grid w-full grid-cols-4">
+          <TabsTrigger value="ai" className="flex items-center gap-2">
+            <Cpu className="h-4 w-4" />
+            <span>Proveedor IA</span>
+          </TabsTrigger>
+          <TabsTrigger value="whatsapp" className="flex items-center gap-2">
+            <MessageCircle className="h-4 w-4" />
+            <span>WhatsApp</span>
+          </TabsTrigger>
+          <TabsTrigger value="apis" className="flex items-center gap-2">
+            <KeyRound className="h-4 w-4" />
+            <span>APIs & Scrapers</span>
+          </TabsTrigger>
+          <TabsTrigger value="offers" className="flex items-center gap-2">
+            <Briefcase className="h-4 w-4" />
+            <span>Oferta Comercial</span>
+          </TabsTrigger>
+        </TabsList>
+
+        {/* 1. TAB PROVEEDOR IA */}
+        <TabsContent value="ai">
+          <Card>
+            <CardHeader>
+              <div className="flex items-center justify-between">
+                <div>
+                  <CardTitle>Cerebro del Agente (LLM)</CardTitle>
+                  <CardDescription>
+                    Configuración de NVIDIA NIM / Groq / OpenAI para razonamiento y respuestas
+                  </CardDescription>
+                </div>
+                <Badge variant="outline" className="bg-primary/10 text-primary border-primary/20">
+                  NVIDIA NIM Activo
+                </Badge>
               </div>
-              <div>
-                <Label htmlFor="description">Descripción *</Label>
-                <Textarea
-                  id="description"
-                  value={form.description}
-                  onChange={(e) =>
-                    setForm({ ...form, description: e.target.value })
-                  }
-                  rows={4}
-                  placeholder="Describe en detalle qué servicio ofreces, qué incluye, etc."
-                />
-              </div>
+            </CardHeader>
+            <CardContent className="space-y-4">
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                <div>
-                  <Label htmlFor="priceRange">Rango de precio</Label>
-                  <Input
-                    id="priceRange"
-                    value={form.priceRange}
+                <div className="space-y-2">
+                  <Label>Proveedor</Label>
+                  <select
+                    value={providerForm.provider}
                     onChange={(e) =>
-                      setForm({ ...form, priceRange: e.target.value })
+                      setProviderForm({ ...providerForm, provider: e.target.value })
                     }
-                    placeholder="$1,500 - $5,000 USD / mes"
-                  />
+                    className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                  >
+                    <option value="nvidia">NVIDIA NIM (Kimi K2.5 / GLM / Llama 3)</option>
+                    <option value="groq">Groq (Llama 3 / Mistral)</option>
+                    <option value="openai">OpenAI Oficial</option>
+                    <option value="mock">Modo Mock (Pruebas)</option>
+                  </select>
                 </div>
-                <div>
-                  <Label htmlFor="sector">Sector</Label>
+                <div className="space-y-2">
+                  <Label>Modelo Activo</Label>
                   <Input
-                    id="sector"
-                    value={form.sector}
+                    value={providerForm.model}
                     onChange={(e) =>
-                      setForm({ ...form, sector: e.target.value })
+                      setProviderForm({ ...providerForm, model: e.target.value })
                     }
-                    placeholder="Salud y belleza"
-                  />
-                </div>
-                <div className="md:col-span-2">
-                  <Label htmlFor="idealCustomer">Cliente ideal</Label>
-                  <Textarea
-                    id="idealCustomer"
-                    value={form.idealCustomer}
-                    onChange={(e) =>
-                      setForm({ ...form, idealCustomer: e.target.value })
-                    }
-                    rows={2}
-                    placeholder="Clínicas de estética con 1-5 sedes, facturación media-alta, que quieren crecer su flujo de pacientes"
-                  />
-                </div>
-                <div>
-                  <Label htmlFor="targetNiches">Nichos objetivo</Label>
-                  <Input
-                    id="targetNiches"
-                    value={form.targetNiches}
-                    onChange={(e) =>
-                      setForm({ ...form, targetNiches: e.target.value })
-                    }
-                    placeholder="clínica estética, medicina estética, cirugía plástica, dermatología"
-                  />
-                  <p className="text-[11px] text-muted-foreground mt-1">
-                    Separados por coma
-                  </p>
-                </div>
-                <div>
-                  <Label htmlFor="budget">Presupuesto objetivo (opcional)</Label>
-                  <Input
-                    id="budget"
-                    value={form.budget}
-                    onChange={(e) =>
-                      setForm({ ...form, budget: e.target.value })
-                    }
-                    placeholder="media-alto"
-                  />
-                </div>
-                <div>
-                  <Label htmlFor="cities">Ciudades objetivo</Label>
-                  <Input
-                    id="cities"
-                    value={form.cities}
-                    onChange={(e) =>
-                      setForm({ ...form, cities: e.target.value })
-                    }
-                    placeholder="Bogotá, Medellín, Cali"
-                  />
-                </div>
-                <div>
-                  <Label htmlFor="countries">Países</Label>
-                  <Input
-                    id="countries"
-                    value={form.countries}
-                    onChange={(e) =>
-                      setForm({ ...form, countries: e.target.value })
-                    }
-                    placeholder="Colombia"
+                    placeholder="z-ai/glm-5.3-flash"
                   />
                 </div>
               </div>
-              <div className="flex justify-between pt-2">
-                {editingId ? (
-                  <Button
-                    variant="destructive"
-                    size="sm"
-                    onClick={() => deleteOffer.mutate(editingId)}
-                  >
-                    <Trash2 className="h-4 w-4 mr-1" /> Eliminar
-                  </Button>
-                ) : (
-                  <span />
-                )}
-                <Button
-                  onClick={() => saveOffer.mutate()}
-                  disabled={saveOffer.isPending || !form.name || !form.description}
-                >
-                  {saveOffer.isPending ? (
-                    <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                  ) : (
-                    <Save className="h-4 w-4 mr-2" />
-                  )}
-                  Guardar oferta
+
+              <div className="space-y-2">
+                <Label>Base URL (Endpoint API)</Label>
+                <Input
+                  value={providerForm.base_url}
+                  onChange={(e) =>
+                    setProviderForm({ ...providerForm, base_url: e.target.value })
+                  }
+                  placeholder="https://integrate.api.nvidia.com/v1"
+                />
+              </div>
+
+              <div className="space-y-2">
+                <Label>API Key de NVIDIA / Proveedor</Label>
+                <Input
+                  type="password"
+                  value={providerForm.api_key}
+                  onChange={(e) =>
+                    setProviderForm({ ...providerForm, api_key: e.target.value })
+                  }
+                  placeholder="nvapi-..."
+                />
+              </div>
+
+              <div className="flex gap-3 pt-2">
+                <Button onClick={handleTestProvider} variant="outline" disabled={testingProvider}>
+                  {testingProvider ? "Probando..." : "Probar Conexión"}
+                </Button>
+                <Button onClick={handleSaveProvider} disabled={savingProvider}>
+                  <Save className="h-4 w-4 mr-2" />
+                  {savingProvider ? "Guardando..." : "Guardar Ajustes de IA"}
                 </Button>
               </div>
-            </div>
-          )}
-        </CardContent>
-      </Card>
+            </CardContent>
+          </Card>
+        </TabsContent>
 
-      {/* Integrations */}
-      <Card>
-        <CardHeader>
-          <CardTitle className="flex items-center gap-2">
-            <KeyRound className="h-5 w-5" /> Integraciones
-          </CardTitle>
-          <CardDescription>
-            Configura las APIs oficiales para fuentes de leads y automatización
-            de contacto. Los secrets se guardan cifrados en tu base de datos
-            local.
-          </CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-6">
-          {/* Google Places */}
-          <IntegrationCard
-            icon={<MapPin className="h-4 w-4" />}
-            name="Google Places API"
-            description="Fuente oficial de negocios. Activa el adapter de Google Places en Buscar Clientes."
-            configured={configured.googlePlaces}
-          >
-            <div>
-              <Label htmlFor="googlePlacesApiKey">API Key</Label>
-              <Input
-                id="googlePlacesApiKey"
-                type="password"
-                value={integForm.googlePlacesApiKey}
-                onChange={(e) =>
-                  setIntegForm({ ...integForm, googlePlacesApiKey: e.target.value })
-                }
-                placeholder="AIza..."
-              />
-            </div>
-          </IntegrationCard>
+        {/* 2. TAB WHATSAPP */}
+        <TabsContent value="whatsapp">
+          <Card>
+            <CardHeader>
+              <div className="flex items-center justify-between">
+                <div>
+                  <CardTitle>WhatsApp Daemon (Baileys)</CardTitle>
+                  <CardDescription>
+                    Vincula tu número de WhatsApp escaneando el código QR
+                  </CardDescription>
+                </div>
+                {waStatus.status === "connected" ? (
+                  <Badge className="bg-emerald-500 text-white flex items-center gap-1">
+                    <CheckCircle2 className="h-3 w-3" /> Conectado ({waStatus.phone})
+                  </Badge>
+                ) : waStatus.status === "linking" ? (
+                  <Badge variant="outline" className="bg-amber-500/10 text-amber-500 border-amber-500/20">
+                    Esperando Escaneo QR
+                  </Badge>
+                ) : (
+                  <Badge variant="outline" className="bg-destructive/10 text-destructive border-destructive/20 flex items-center gap-1">
+                    <AlertCircle className="h-3 w-3" /> Desconectado
+                  </Badge>
+                )}
+              </div>
+            </CardHeader>
+            <CardContent className="space-y-6">
+              <div className="flex flex-col items-center justify-center p-6 border rounded-xl bg-muted/20">
+                {waQr ? (
+                  <div className="text-center space-y-4">
+                    <div className="bg-white p-4 rounded-xl inline-block shadow-md">
+                      <img src={waQr} alt="QR WhatsApp" className="w-56 h-56 mx-auto" />
+                    </div>
+                    <p className="text-sm font-medium">
+                      Abre WhatsApp en tu teléfono &gt; Dispositivos vinculados &gt; Vincular dispositivo
+                    </p>
+                  </div>
+                ) : waStatus.status === "connected" ? (
+                  <div className="text-center space-y-2 py-4">
+                    <CheckCircle2 className="h-12 w-12 text-emerald-500 mx-auto" />
+                    <h3 className="font-semibold text-lg">WhatsApp Vinculado con éxito</h3>
+                    <p className="text-sm text-muted-foreground">
+                      Número activo: {waStatus.phone || "Conectado"}
+                    </p>
+                  </div>
+                ) : (
+                  <div className="text-center space-y-2 py-6">
+                    <QrCode className="h-12 w-12 text-muted-foreground mx-auto" />
+                    <p className="text-sm text-muted-foreground">
+                      Presiona &quot;Vincular WhatsApp&quot; para generar el código QR.
+                    </p>
+                  </div>
+                )}
+              </div>
 
-          <Separator />
+              <div className="flex items-center justify-between pt-2">
+                <Button variant="outline" onClick={checkWhatsApp} disabled={loadingWa}>
+                  <RefreshCw className={`h-4 w-4 mr-2 ${loadingWa ? "animate-spin" : ""}`} />
+                  Actualizar Estado
+                </Button>
+                <div>
+                  {waStatus.status === "connected" ? (
+                    <Button variant="destructive" onClick={handleWaDisconnect}>
+                      Desconectar Sesión
+                    </Button>
+                  ) : (
+                    <Button onClick={handleWaConnect}>
+                      Vincular WhatsApp (Generar QR)
+                    </Button>
+                  )}
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+        </TabsContent>
 
-          {/* Telegram */}
-          <IntegrationCard
-            icon={<MessageCircle className="h-4 w-4" />}
-            name="Telegram Bot"
-            description="Bot de Telegram para controlar AGENTE LEADS desde chat. Necesitas crear un bot con @BotFather."
-            configured={configured.telegram}
-          >
-            <div>
-              <Label htmlFor="telegramBotToken">Bot Token</Label>
-              <Input
-                id="telegramBotToken"
-                type="password"
-                value={integForm.telegramBotToken}
-                onChange={(e) =>
-                  setIntegForm({ ...integForm, telegramBotToken: e.target.value })
-                }
-                placeholder="123456:ABC-..."
-              />
-            </div>
-            <div>
-              <Label htmlFor="telegramAllowedIds">IDs permitidos (whitelist)</Label>
-              <Input
-                id="telegramAllowedIds"
-                value={integForm.telegramAllowedIds}
-                onChange={(e) =>
-                  setIntegForm({
-                    ...integForm,
-                    telegramAllowedIds: e.target.value,
-                  })
-                }
-                placeholder="123456789, 987654321"
-              />
-              <p className="text-[11px] text-muted-foreground mt-1">
-                Separados por coma. Encuéntralos hablando con @userinfobot.
-              </p>
-            </div>
-          </IntegrationCard>
+        {/* 3. TAB APIS & SCRAPERS */}
+        <TabsContent value="apis">
+          <Card>
+            <CardHeader>
+              <CardTitle>APIs y Canales de Comunicación</CardTitle>
+              <CardDescription>
+                Configura Telegram, SendGrid y motores de búsqueda para prospección
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-6">
+              {/* Telegram */}
+              <div className="space-y-3 p-4 border rounded-lg">
+                <div className="flex items-center gap-2">
+                  <Bot className="h-5 w-5 text-primary" />
+                  <h3 className="font-semibold text-sm">Telegram Bot</h3>
+                </div>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <div className="space-y-1">
+                    <Label htmlFor="telegramBotToken">Bot Token (@BotFather)</Label>
+                    <Input
+                      id="telegramBotToken"
+                      type="password"
+                      value={integForm.telegramBotToken}
+                      onChange={(e) =>
+                        setIntegForm({ ...integForm, telegramBotToken: e.target.value })
+                      }
+                      placeholder="8539019258:AA..."
+                    />
+                  </div>
+                  <div className="space-y-1">
+                    <Label htmlFor="telegramAllowedIds">IDs Permitidos (Whitelist)</Label>
+                    <Input
+                      id="telegramAllowedIds"
+                      value={integForm.telegramAllowedIds}
+                      onChange={(e) =>
+                        setIntegForm({ ...integForm, telegramAllowedIds: e.target.value })
+                      }
+                      placeholder="1204900940, ..."
+                    />
+                  </div>
+                </div>
+              </div>
 
-          <Separator />
+              {/* Apify & Google Places */}
+              <div className="space-y-3 p-4 border rounded-lg">
+                <div className="flex items-center gap-2">
+                  <Webhook className="h-5 w-5 text-primary" />
+                  <h3 className="font-semibold text-sm">Scrapers de Extracción (Apify & Google)</h3>
+                </div>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <div className="space-y-1">
+                    <Label htmlFor="apifyToken">Apify API Token (Instagram / Google)</Label>
+                    <Input
+                      id="apifyToken"
+                      type="password"
+                      value={integForm.apifyToken}
+                      onChange={(e) =>
+                        setIntegForm({ ...integForm, apifyToken: e.target.value })
+                      }
+                      placeholder="apify_api_..."
+                    />
+                  </div>
+                  <div className="space-y-1">
+                    <Label htmlFor="googlePlacesApiKey">Google Places API Key</Label>
+                    <Input
+                      id="googlePlacesApiKey"
+                      type="password"
+                      value={integForm.googlePlacesApiKey}
+                      onChange={(e) =>
+                        setIntegForm({ ...integForm, googlePlacesApiKey: e.target.value })
+                      }
+                      placeholder="AIza..."
+                    />
+                  </div>
+                </div>
+              </div>
 
-          {/* SendGrid */}
-          <IntegrationCard
-            icon={<Send className="h-4 w-4" />}
-            name="SendGrid (Email)"
-            description="Para enviar propuestas por email. Requiere cuenta en SendGrid con API key y remitente verificado."
-            configured={configured.sendgrid}
-          >
-            <div>
-              <Label htmlFor="sendgridApiKey">API Key</Label>
-              <Input
-                id="sendgridApiKey"
-                type="password"
-                value={integForm.sendgridApiKey}
-                onChange={(e) =>
-                  setIntegForm({ ...integForm, sendgridApiKey: e.target.value })
-                }
-                placeholder="SG..."
-              />
-            </div>
-            <div>
-              <Label htmlFor="sendgridFromEmail">Email remitente</Label>
-              <Input
-                id="sendgridFromEmail"
-                type="email"
-                value={integForm.sendgridFromEmail}
-                onChange={(e) =>
-                  setIntegForm({
-                    ...integForm,
-                    sendgridFromEmail: e.target.value,
-                  })
-                }
-                placeholder="ventas@tuempresa.com"
-              />
-            </div>
-          </IntegrationCard>
+              {/* SendGrid */}
+              <div className="space-y-3 p-4 border rounded-lg">
+                <div className="flex items-center gap-2">
+                  <Send className="h-5 w-5 text-primary" />
+                  <h3 className="font-semibold text-sm">Envío de Emails (SendGrid)</h3>
+                </div>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <div className="space-y-1">
+                    <Label htmlFor="sendgridApiKey">SendGrid API Key</Label>
+                    <Input
+                      id="sendgridApiKey"
+                      type="password"
+                      value={integForm.sendgridApiKey}
+                      onChange={(e) =>
+                        setIntegForm({ ...integForm, sendgridApiKey: e.target.value })
+                      }
+                      placeholder="SG..."
+                    />
+                  </div>
+                  <div className="space-y-1">
+                    <Label htmlFor="sendgridFromEmail">Email Remitente Verificado</Label>
+                    <Input
+                      id="sendgridFromEmail"
+                      value={integForm.sendgridFromEmail}
+                      onChange={(e) =>
+                        setIntegForm({ ...integForm, sendgridFromEmail: e.target.value })
+                      }
+                      placeholder="contacto@tuempresa.com"
+                    />
+                  </div>
+                </div>
+              </div>
 
-          <Separator />
+              <Button
+                onClick={() => saveIntegration.mutate()}
+                disabled={saveIntegration.isPending}
+                className="w-full"
+              >
+                {saveIntegration.isPending ? (
+                  <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                ) : (
+                  <Save className="h-4 w-4 mr-2" />
+                )}
+                Guardar Configuración de APIs
+              </Button>
+            </CardContent>
+          </Card>
+        </TabsContent>
 
-          {/* WhatsApp */}
-          <IntegrationCard
-            icon={<MessageCircle className="h-4 w-4" />}
-            name="WhatsApp Cloud API (Meta)"
-            description="Para enviar propuestas por WhatsApp Business. Requiere app en Meta for Developers con WhatsApp Cloud API."
-            configured={configured.whatsapp}
-          >
-            <div>
-              <Label htmlFor="whatsappToken">Access Token</Label>
-              <Input
-                id="whatsappToken"
-                type="password"
-                value={integForm.whatsappToken}
-                onChange={(e) =>
-                  setIntegForm({ ...integForm, whatsappToken: e.target.value })
-                }
-                placeholder="EAAG..."
-              />
-            </div>
-            <div>
-              <Label htmlFor="whatsappPhoneId">Phone Number ID</Label>
-              <Input
-                id="whatsappPhoneId"
-                value={integForm.whatsappPhoneId}
-                onChange={(e) =>
-                  setIntegForm({
-                    ...integForm,
-                    whatsappPhoneId: e.target.value,
-                  })
-                }
-                placeholder="123456789012345"
-              />
-            </div>
-          </IntegrationCard>
+        {/* 4. TAB OFERTA COMERCIAL */}
+        <TabsContent value="offers">
+          <Card>
+            <CardHeader>
+              <CardTitle>Definición de Oferta Comercial</CardTitle>
+              <CardDescription>
+                Define tu producto, precios y nichos para que el agente filtre y califique los leads
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div className="space-y-2">
+                  <Label>Nombre de la Oferta</Label>
+                  <Input
+                    value={offerForm.name}
+                    onChange={(e) => setOfferForm({ ...offerForm, name: e.target.value })}
+                    placeholder="Servicio de Automatización IA"
+                  />
+                </div>
+                <div className="space-y-2">
+                  <Label>Rango de Precios</Label>
+                  <Input
+                    value={offerForm.priceRange}
+                    onChange={(e) => setOfferForm({ ...offerForm, priceRange: e.target.value })}
+                    placeholder="$1,000 - $3,000 USD"
+                  />
+                </div>
+              </div>
 
-          <Separator />
+              <div className="space-y-2">
+                <Label>Descripción del Servicio</Label>
+                <Textarea
+                  value={offerForm.description}
+                  onChange={(e) => setOfferForm({ ...offerForm, description: e.target.value })}
+                  placeholder="Detalla qué incluye tu oferta comercial..."
+                  rows={3}
+                />
+              </div>
 
-          {/* Apify */}
-          <IntegrationCard
-            icon={<Webhook className="h-4 w-4" />}
-            name="Apify (opcional)"
-            description="Para usar Google Search Scraper y otros scrapers de Apify. Opcional — el Web Scraper integrado funciona sin esto."
-            configured={configured.apify}
-          >
-            <div>
-              <Label htmlFor="apifyToken">API Token</Label>
-              <Input
-                id="apifyToken"
-                type="password"
-                value={integForm.apifyToken}
-                onChange={(e) =>
-                  setIntegForm({ ...integForm, apifyToken: e.target.value })
-                }
-                placeholder="apify_api_..."
-              />
-            </div>
-          </IntegrationCard>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div className="space-y-2">
+                  <Label>Nichos Objetivo</Label>
+                  <Input
+                    value={offerForm.targetNiches}
+                    onChange={(e) => setOfferForm({ ...offerForm, targetNiches: e.target.value })}
+                    placeholder="Inmobiliarias, Clínicas, Dentistas, Abogados"
+                  />
+                </div>
+                <div className="space-y-2">
+                  <Label>Ciudades / Regiones</Label>
+                  <Input
+                    value={offerForm.cities}
+                    onChange={(e) => setOfferForm({ ...offerForm, cities: e.target.value })}
+                    placeholder="Madrid, Barcelona, Bogotá, Miami"
+                  />
+                </div>
+              </div>
 
-          <Button
-            onClick={() => saveIntegration.mutate()}
-            disabled={saveIntegration.isPending}
-            className="w-full"
-          >
-            {saveIntegration.isPending ? (
-              <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-            ) : (
-              <Save className="h-4 w-4 mr-2" />
-            )}
-            Guardar integraciones
-          </Button>
-        </CardContent>
-      </Card>
+              <Button
+                onClick={() => saveOffer.mutate()}
+                disabled={saveOffer.isPending}
+                className="w-full"
+              >
+                {saveOffer.isPending ? (
+                  <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                ) : (
+                  <Save className="h-4 w-4 mr-2" />
+                )}
+                Guardar Oferta Comercial
+              </Button>
+            </CardContent>
+          </Card>
+        </TabsContent>
+      </Tabs>
     </div>
-  );
-}
-
-function IntegrationCard({
-  icon,
-  name,
-  description,
-  configured,
-  children,
-}: {
-  icon: React.ReactNode;
-  name: string;
-  description: string;
-  configured: boolean;
-  children: React.ReactNode;
-}) {
-  return (
-    <div className="space-y-3">
-      <div className="flex items-start justify-between">
-        <div className="flex items-start gap-3">
-          <div className="flex h-8 w-8 items-center justify-center rounded-md bg-primary/10 text-primary">
-            {icon}
-          </div>
-          <div>
-            <div className="font-medium flex items-center gap-2">
-              {name}
-              {configured && (
-                <Badge variant="secondary" className="text-[10px]">
-                  Configurado
-                </Badge>
-              )}
-            </div>
-            <p className="text-xs text-muted-foreground mt-0.5">{description}</p>
-          </div>
-        </div>
-      </div>
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-3 pl-11">
-        {children}
-      </div>
-    </div>
-  );
-}
-
-function Skeleton({ className }: { className?: string }) {
-  return (
-    <div className={`animate-pulse bg-muted rounded ${className}`} />
   );
 }

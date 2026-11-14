@@ -15,7 +15,6 @@ import {
   Moon,
   Sun,
   MessageSquare,
-  Cpu,
 } from "lucide-react";
 import { useTheme } from "next-themes";
 import { cn } from "@/lib/utils";
@@ -28,8 +27,7 @@ const NAV = [
   { href: "/buscar", label: "Buscar Clientes", icon: Search },
   { href: "/prospectos", label: "Prospectos", icon: Users },
   { href: "/propuestas", label: "Propuestas", icon: FileText },
-  { href: "/configuracion-general", label: "Configuración IA & WA", icon: Cpu },
-  { href: "/ajustes", label: "Ajustes Ofertas", icon: Settings },
+  { href: "/ajustes", label: "Ajustes del Sistema", icon: Settings },
 ];
 
 export function AppSidebar() {
