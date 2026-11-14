@@ -8,7 +8,8 @@ taskkill /FI "WINDOWTITLE eq AGENTE LEADS - Bot*" /T /F 2>nul
 taskkill /FI "WINDOWTITLE eq AGENTE LEADS - Dashboard*" /T /F 2>nul
 taskkill /FI "WINDOWTITLE eq AGENTE LEADS - WhatsApp*" /T /F 2>nul
 taskkill /IM node.exe /F 2>nul
+del /F /Q "C:\Users\Johan\.local\share\albra\whatsapp\default\.owner.lock" 2>nul
 
 echo.
-echo [OK] Servicios detenidos.
+echo [OK] Servicios detenidos y bloqueos limpiados.
 pause
