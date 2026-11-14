@@ -14,6 +14,8 @@ import {
   Sparkles,
   Moon,
   Sun,
+  MessageSquare,
+  Cpu,
 } from "lucide-react";
 import { useTheme } from "next-themes";
 import { cn } from "@/lib/utils";
@@ -22,10 +24,12 @@ import { useSession, signOut } from "next-auth/react";
 
 const NAV = [
   { href: "/", label: "Dashboard", icon: LayoutDashboard },
+  { href: "/chat", label: "Chat con Agente", icon: MessageSquare },
   { href: "/buscar", label: "Buscar Clientes", icon: Search },
   { href: "/prospectos", label: "Prospectos", icon: Users },
   { href: "/propuestas", label: "Propuestas", icon: FileText },
-  { href: "/ajustes", label: "Ajustes", icon: Settings },
+  { href: "/configuracion-general", label: "Configuración IA & WA", icon: Cpu },
+  { href: "/ajustes", label: "Ajustes Ofertas", icon: Settings },
 ];
 
 export function AppSidebar() {
@@ -42,7 +46,7 @@ export function AppSidebar() {
         <div className="flex flex-col leading-none">
           <span className="text-sm font-bold tracking-tight">AGENTE LEADS</span>
           <span className="text-[10px] text-muted-foreground">
-            Prospección Inteligente
+            Panel Unificado
           </span>
         </div>
       </div>
@@ -88,9 +92,9 @@ export function AppSidebar() {
         </Button>
         <div className="rounded-md px-3 py-2 text-xs text-muted-foreground bg-sidebar-accent/50">
           <div className="font-medium text-sidebar-foreground truncate">
-            {session?.user?.name || session?.user?.email || "Invitado"}
+            {session?.user?.name || session?.user?.email || "Operador"}
           </div>
-          <div className="truncate">{session?.user?.email}</div>
+          <div className="truncate">{session?.user?.email || "admin@agenteleads.com"}</div>
           <button
             onClick={() => signOut({ callbackUrl: "/login" })}
             className="mt-1 text-[11px] text-primary hover:underline"
@@ -108,7 +112,7 @@ export function MobileNav() {
   return (
     <div className="md:hidden fixed bottom-0 left-0 right-0 border-t bg-background z-50">
       <div className="grid grid-cols-5 gap-1 px-1 py-1">
-        {NAV.map((item) => {
+        {NAV.slice(0, 5).map((item) => {
           const Icon = item.icon;
           const active =
             item.href === "/"
