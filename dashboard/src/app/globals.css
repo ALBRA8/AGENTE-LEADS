@@ -120,3 +120,16 @@
     @apply bg-background text-foreground;
   }
 }
+
+/* Ocultar el indicador flotante de desarrollo de Next.js (la 'N' roja/negra) */
+nextjs-portal,
+div[data-nextjs-toast],
+div[data-nextjs-dialog-overlay],
+#nextjs-dev-overlay,
+[data-nextjs-dev-overlay],
+[data-next-badge] {
+  display: none !important;
+  visibility: hidden !important;
+  opacity: 0 !important;
+  pointer-events: none !important;
+}
